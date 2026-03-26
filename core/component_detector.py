@@ -7,7 +7,7 @@ by the PDF parser using regular expressions.
 Supported prefixes (case-insensitive):
     D / LED / LD  – diodes, LEDs
     C             – capacitors
-    IC / U        – integrated circuits
+    IC / U / RG / VR / BT / PS / PU  – integrated circuits, regulators, converters
     Q / T         – transistors
     R             – resistors
     L             – inductors
@@ -27,19 +27,21 @@ from core.pdf_parser import TextElement
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PATTERNS: Dict[str, Pattern] = {
-    "diode":      re.compile(r"^D\d+[A-Z]?$",              re.IGNORECASE),
-    "led":        re.compile(r"^(?:LED|LD)\d+[A-Z]?$",     re.IGNORECASE),
-    "capacitor":  re.compile(r"^C\d+[A-Z]?$",              re.IGNORECASE),
-    "ic":         re.compile(r"^(?:IC|U)\d+[A-Z]?$",       re.IGNORECASE),
-    "transistor": re.compile(r"^(?:Q|T)\d+[A-Z]?$",        re.IGNORECASE),
-    "resistor":   re.compile(r"^R\d+[A-Z]?$",              re.IGNORECASE),
-    "inductor":   re.compile(r"^L\d+[A-Z]?$",              re.IGNORECASE),
-    "connector":  re.compile(r"^(?:J|P|CN|XP)\d+[A-Z]?$",  re.IGNORECASE),
-    "fuse":       re.compile(r"^F\d+[A-Z]?$",              re.IGNORECASE),
+    "diode":      re.compile(r"^D\d+[A-Z]?$",                          re.IGNORECASE),
+    "led":        re.compile(r"^(?:LED|LD)\d+[A-Z]?$",                 re.IGNORECASE),
+    "capacitor":  re.compile(r"^C\d+[A-Z]?$",                          re.IGNORECASE),
+    # IC / voltage regulators / converters / batteries / power modules
+    "ic":         re.compile(r"^(?:IC|U|RG|VR|BT|PS|PU|REG|DC|V)\d+[A-Z]?$",
+                             re.IGNORECASE),
+    "transistor": re.compile(r"^(?:Q|T)\d+[A-Z]?$",                    re.IGNORECASE),
+    "resistor":   re.compile(r"^R\d+[A-Z]?$",                          re.IGNORECASE),
+    "inductor":   re.compile(r"^L\d+[A-Z]?$",                          re.IGNORECASE),
+    "connector":  re.compile(r"^(?:J|P|CN|XP)\d+[A-Z]?$",             re.IGNORECASE),
+    "fuse":       re.compile(r"^F\d+[A-Z]?$",                          re.IGNORECASE),
     # Additional component types commonly seen in KiCad PCB PDFs
-    "test_point": re.compile(r"^TP\d+[A-Z]?$",             re.IGNORECASE),
-    "fiducial":   re.compile(r"^FID\d+[A-Z]?$",            re.IGNORECASE),
-    "antenna":    re.compile(r"^AE\d+[A-Z]?$",             re.IGNORECASE),
+    "test_point": re.compile(r"^TP\d+[A-Z]?$",                         re.IGNORECASE),
+    "fiducial":   re.compile(r"^FID\d+[A-Z]?$",                        re.IGNORECASE),
+    "antenna":    re.compile(r"^AE\d+[A-Z]?$",                         re.IGNORECASE),
 }
 
 # Component types that commonly carry polarity markers
@@ -183,6 +185,8 @@ class ComponentDetector:
             if existing is None or comp.bbox.area > existing.bbox.area:
                 best[key] = comp
         return list(best.values())
+
+
 
 
 

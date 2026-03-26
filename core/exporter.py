@@ -287,47 +287,133 @@ class Exporter:
     # NORMAL mode annotation
     # ══════════════════════════════════════════════════════════════════════
 
-    _GREEN = (0.20, 0.85, 0.20)
+    _GREEN  = (0.20, 0.85, 0.20)   # marked
+    _RED    = (0.90, 0.15, 0.15)   # unmarked polar
+    _BLUE   = (0.10, 0.35, 0.90)   # individual marker location
 
     def _annotate_page(self, page: fitz.Page, results: List[MatchResult]) -> None:
-        """Normal mode: only green marks on detected polarity positions."""
+        """Normal mode: green for marked, red for unmarked polar, blue crosshair for marker positions."""
+        marked_refs: List[str] = []
+
         for result in results:
             comp = result.component
-            if not comp.is_polar or not result.has_polarity:
+            if not comp.is_polar:
                 continue
 
-            best_marker = self._pick_best_marker(result)
-            if best_marker is None:
-                continue
+            if result.has_polarity:
+                # ── Marked: green circle at marker position ───────────────
+                best_marker = self._pick_best_marker(result)
+                if best_marker is None:
+                    continue
 
-            mx, my = best_marker.center.x, best_marker.center.y
-            pw, ph = best_marker.bbox.width, best_marker.bbox.height
-            pad_half_w = max(pw / 2.0, 3.0) + 2.0
-            pad_half_h = max(ph / 2.0, 3.0) + 2.0
+                mx, my = best_marker.center.x, best_marker.center.y
+                pw, ph = best_marker.bbox.width, best_marker.bbox.height
+                pad_half_w = max(pw / 2.0, 3.0) + 2.0
+                pad_half_h = max(ph / 2.0, 3.0) + 2.0
 
-            mark_rect = fitz.Rect(
-                mx - pad_half_w, my - pad_half_h,
-                mx + pad_half_w, my + pad_half_h,
-            )
-            if best_marker.marker_type in (
-                "filled_dot", "corner_rect", "cross_vector",
-                "plus_text", "triangle", "pad_asymmetry",
-            ):
-                mark = page.add_circle_annot(mark_rect)
+                mark_rect = fitz.Rect(
+                    mx - pad_half_w, my - pad_half_h,
+                    mx + pad_half_w, my + pad_half_h,
+                )
+                if best_marker.marker_type in (
+                    "filled_dot", "corner_rect", "cross_vector",
+                    "plus_text", "triangle", "pad_asymmetry",
+                ):
+                    mark = page.add_circle_annot(mark_rect)
+                else:
+                    mark = page.add_rect_annot(mark_rect)
+                mark.set_colors(stroke=self._GREEN, fill=self._GREEN)
+                mark.set_border(width=0.8)
+                mark.set_opacity(0.50)
+                mark.set_info(
+                    title="Polarity",
+                    content=(
+                        f"{comp.ref}  type={best_marker.marker_type}"
+                        f"  conf={best_marker.confidence:.0%}"
+                    ),
+                )
+                mark.update()
+
+                # ── Blue crosshair at the exact marker centre ─────────────
+                r_cross = max(pad_half_w, pad_half_h) + 1.5
+                cross_rect = fitz.Rect(
+                    mx - r_cross, my - r_cross, mx + r_cross, my + r_cross
+                )
+                cross = page.add_circle_annot(cross_rect)
+                cross.set_colors(stroke=self._BLUE, fill=None)
+                cross.set_border(width=0.5)
+                cross.set_opacity(0.45)
+                cross.set_info(
+                    title=f"Marker: {best_marker.marker_type}",
+                    content=f"{comp.ref}  conf={best_marker.confidence:.0%}",
+                )
+                cross.update()
+
+                marked_refs.append(comp.ref)
+
             else:
-                mark = page.add_rect_annot(mark_rect)
+                # ── Unmarked polar: red circle at component centre ─────────
+                cx, cy = comp.center.x, comp.center.y
+                r = 6.0
+                red_rect = fitz.Rect(cx - r, cy - r, cx + r, cy + r)
+                red = page.add_circle_annot(red_rect)
+                red.set_colors(stroke=self._RED, fill=self._RED)
+                red.set_border(width=1.0)
+                red.set_opacity(0.40)
+                red.set_info(
+                    title=f"Unmarked: {comp.ref}",
+                    content=f"{comp.ref} ({comp.comp_type}) — no polarity marker detected",
+                )
+                red.update()
 
-            mark.set_colors(stroke=self._GREEN, fill=self._GREEN)
-            mark.set_border(width=0.8)
-            mark.set_opacity(0.50)
-            mark.set_info(
-                title="Polarity",
-                content=(
-                    f"{comp.ref}  type={best_marker.marker_type}"
-                    f"  conf={best_marker.confidence:.0%}"
-                ),
-            )
-            mark.update()
+        # ── White legend box (lower-right corner) ─────────────────────────
+        if results:
+            self._annotate_legend(page, results)
+
+    def _annotate_legend(self, page: fitz.Page, results: List[MatchResult]) -> None:
+        """Draw a compact summary legend in the lower-right corner."""
+        n_polar    = sum(1 for r in results if r.component.is_polar)
+        n_marked   = sum(1 for r in results if r.component.is_polar and r.has_polarity)
+        n_unmarked = n_polar - n_marked
+
+        pw, ph = page.rect.width, page.rect.height
+        BOX_W, LINE_H = 145, 10
+        entries = [
+            ("● Marked polar components",     self._GREEN,  str(n_marked)),
+            ("● Unmarked polar components",    self._RED,    str(n_unmarked)),
+            ("○ Exact marker location",        self._BLUE,   ""),
+        ]
+        BOX_H = (len(entries) + 2) * LINE_H + 8
+
+        X0 = pw - BOX_W - 6
+        Y0 = ph - BOX_H - 6
+
+        # Background rectangle
+        bg = page.add_rect_annot(fitz.Rect(X0, Y0, X0 + BOX_W, Y0 + BOX_H))
+        bg.set_colors(stroke=(0.3, 0.3, 0.3), fill=(1.0, 1.0, 1.0))
+        bg.set_border(width=0.7)
+        bg.set_opacity(0.90)
+        bg.update()
+
+        # Title
+        y = Y0 + 3
+        page.add_freetext_annot(
+            fitz.Rect(X0 + 4, y, X0 + BOX_W - 4, y + LINE_H),
+            f"PolarityMark  ({n_polar} polar components)",
+            fontsize=5.5, text_color=(0.1, 0.1, 0.1),
+            fill_color=None, border_color=None, border_width=0, opacity=0.92,
+        ).update()
+        y += LINE_H + 2
+
+        for label, color, count in entries:
+            suffix = f"  ({count})" if count else ""
+            page.add_freetext_annot(
+                fitz.Rect(X0 + 4, y, X0 + BOX_W - 4, y + LINE_H),
+                label + suffix,
+                fontsize=5.5, text_color=color,
+                fill_color=None, border_color=None, border_width=0, opacity=0.92,
+            ).update()
+            y += LINE_H
 
     # ══════════════════════════════════════════════════════════════════════
     # DEBUG mode — visual shape inspection

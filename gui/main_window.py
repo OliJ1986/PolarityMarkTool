@@ -5,24 +5,24 @@ PySide6 main window for PolarityMark.
 
 Supported workflows
 ───────────────────
-1. PDF only       — heuristic detection (PolarityDetector, PadAsymmetry, OpenCV)
+1. PDF only       — heuristic detection
 2. PDF + ODB++    — exact pin-1 from ODB++, registered to PDF coordinates
-                    → annotated PDF overlay
-3. DXF only       — same heuristic pipeline as PDF (no raster pass)
-4. ODB++ only     — no PDF overlay, results in JSON only
+3. DXF only       — same heuristic pipeline as PDF
+4. ODB++ only     — renders directly to PDF with polarity markers
 """
+import json
 import os
 import traceback
 from typing import Optional
 
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
-from PySide6.QtGui import QFont, QColor, QTextCursor
+from PySide6.QtGui import QFont, QColor, QTextCursor, QAction
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QTextEdit, QLabel,
     QSplitter, QCheckBox, QMessageBox, QGroupBox,
     QLineEdit, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar,
+    QHeaderView, QProgressBar, QMenu,
 )
 
 from core.pdf_parser import PDFParser
@@ -37,6 +37,7 @@ from core.image_polarity_detector import ImagePolarityDetector
 from core.matcher import Matcher, MatchResult
 from core.exporter import Exporter
 from utils.config import Config
+from gui.correction_dialog import CorrectionDialog
 
 COL_REF = 0; COL_TYPE = 1; COL_PAGE = 2; COL_STATUS = 3; COL_CONF = 4; COL_MARKERS = 5
 _STATUS_COLOR = {
@@ -44,9 +45,6 @@ _STATUS_COLOR = {
     "unmarked":  QColor(255, 210, 210),
     "ambiguous": QColor(255, 235, 180),
 }
-
-_ODB_EXTENSIONS = {".zip", ".tgz", ".tar", ".gz"}   # .tar.gz handled by endswith check
-
 
 def _is_odb_path(path: str) -> bool:
     low = path.lower()
@@ -62,25 +60,32 @@ def _is_odb_path(path: str) -> bool:
 class AnalysisWorker(QObject):
     log      = Signal(str)
     progress = Signal(int)
-    finished = Signal(object)   # dict
+    finished = Signal(object)
     error    = Signal(str)
 
     def __init__(
         self,
         file_path: str,
-        config: Config,
+        config: "Config",
         odb_path: Optional[str] = None,
+        corrections: Optional[dict] = None,
+        draw_fab: bool = False,
+        draw_silk: bool = False,
+        draw_courtyard: bool = True,
     ):
         super().__init__()
-        self.file_path = file_path
-        self.odb_path  = odb_path
-        self.config    = config
+        self.file_path      = file_path
+        self.odb_path       = odb_path
+        self.config         = config
+        self.corrections    = corrections or {}
+        self.draw_fab       = draw_fab
+        self.draw_silk      = draw_silk
+        self.draw_courtyard = draw_courtyard
 
     @Slot()
     def run(self) -> None:
         ext = os.path.splitext(self.file_path)[1].lower()
         try:
-            # Check if primary file is ODB++ (user loaded .zip/.tgz as source)
             if _is_odb_path(self.file_path) and ext != ".pdf":
                 self._run_odb_only()
             elif ext == ".pdf":
@@ -103,15 +108,14 @@ class AnalysisWorker(QObject):
         pages  = parser.parse()
         parser.close()
         self.progress.emit(20)
-        n_texts  = sum(len(p.texts)  for p in pages)
-        n_shapes = sum(len(p.shapes) for p in pages)
-        self.log.emit(f"   Pages: {len(pages)}  |  Texts: {n_texts}  |  Shapes: {n_shapes}")
+        self.log.emit(f"   Pages: {len(pages)}  |  "
+                      f"Texts: {sum(len(p.texts) for p in pages)}  |  "
+                      f"Shapes: {sum(len(p.shapes) for p in pages)}")
         self._run_heuristic_pipeline(pages, pdf_path=self.file_path)
 
     # ── PDF + ODB++ combined ──────────────────────────────────────────────
 
     def _run_pdf_plus_odb(self) -> None:
-        # 1. Parse PDF
         self.log.emit(f"📂 Parsing PDF: {os.path.basename(self.file_path)}")
         parser = PDFParser(self.file_path)
         pages  = parser.parse()
@@ -122,14 +126,12 @@ class AnalysisWorker(QObject):
         self.log.emit(f"   Shapes: {sum(len(p.shapes) for p in pages)}  "
                       f"|  Texts: {sum(len(p.texts) for p in pages)}")
 
-        # 2. Detect PDF components (needed for coordinate registration)
         self.log.emit("🔍 Detecting components from PDF text …")
         pdf_comps = ComponentDetector().detect(all_texts)
         self.progress.emit(25)
         self.log.emit(f"   Found: {len(pdf_comps)} components "
                       f"({sum(1 for c in pdf_comps if c.is_polar)} polar)")
 
-        # 3. Parse ODB++
         self.log.emit(f"📦 Parsing ODB++: {os.path.basename(self.odb_path)}")
         try:
             odb_comps, unit_scale = parse_odb_raw(self.odb_path)
@@ -143,7 +145,6 @@ class AnalysisWorker(QObject):
         polar_odb = [c for c in odb_comps if c.is_polar and c.pin1 is not None]
         self.log.emit(f"   Components: {len(odb_comps)}  |  Polar with pin-1: {len(polar_odb)}")
 
-        # 4. Register coordinates: ODB++ mm → PDF pt
         self.log.emit("📐 Registering ODB++ → PDF coordinate system …")
         try:
             odb_markers, transform, by_ref = odb_to_pdf_markers(
@@ -161,8 +162,6 @@ class AnalysisWorker(QObject):
             return
         self.progress.emit(60)
 
-        # 5. Build MatchResult list: ODB++ wins, heuristic as fallback
-        #    Run heuristic pipeline silently for components not in ODB++
         self.log.emit("🔬 Heuristic fallback for components not in ODB++ …")
         heuristic = self._heuristic_results(pages, pdf_comps, pdf_path=self.file_path)
         self.progress.emit(85)
@@ -184,9 +183,8 @@ class AnalysisWorker(QObject):
                      any(m.source == "odb" for m in r.markers))
         n_heur = sum(1 for r in results if r.has_polarity and
                      all(m.source != "odb" for m in r.markers))
-        n_total = n_odb + n_heur
         self.log.emit(
-            f"\n📊 Summary: {n_total} marked  "
+            f"\n📊 Summary: {n_odb + n_heur} marked  "
             f"({n_odb} from ODB++ · {n_heur} heuristic)  "
             f"| {sum(1 for r in results if not r.has_polarity)} unmarked"
         )
@@ -210,76 +208,85 @@ class AnalysisWorker(QObject):
                       f"|  Texts: {sum(len(p.texts) for p in pages)}")
         self._run_heuristic_pipeline(pages, pdf_path=None)
 
-    # ── ODB++ only → render directly to PDF ─────────────────────────────
+    # ── ODB++ only → render directly to PDF ──────────────────────────────
 
     def _run_odb_only(self) -> None:
         self.log.emit(f"📦 Parsing ODB++: {os.path.basename(self.file_path)}")
 
-        # Log discovered layers and units
-        from core.odb_renderer import (
-            _ArchiveReader, _parse_matrix, _discover_layers, _detect_units,
-        )
+        # Single archive read — raw_comps passed as odb_comps_cache to the
+        # renderer so it does NOT re-read the archive a second time.
         try:
-            _reader = _ArchiveReader(self.file_path)
-            _mat = _reader.read("matrix/matrix")
-            if _mat:
-                _layers = _parse_matrix(_mat)
-                _roles = _discover_layers(_layers)
-                self.log.emit(f"   Layer discovery ({len(_layers)} layers in matrix):")
-                for role, folder in _roles.items():
-                    self.log.emit(f"     {role:16s} → {folder}")
-            _prof = _reader.read("steps/pcb/profile")
-            if _prof:
-                _units = _detect_units(_prof)
-                self.log.emit(f"   Units: {_units}")
-        except Exception:
-            pass
+            raw_comps, unit_scale = parse_odb_raw(self.file_path)
+        except Exception as exc:
+            self.error.emit(f"ODB++ parse failed:\n{exc}")
+            return
 
-        results = ODBParser().parse(self.file_path)
+        results = ODBParser._build_results(raw_comps, unit_scale)
         self.progress.emit(40)
-        components = [r.component for r in results]
-        n_marked = sum(1 for r in results if r.has_polarity)
+
+        components     = [r.component for r in results]
+        n_marked       = sum(1 for r in results if r.has_polarity)
         n_unmarked_cap = sum(
             1 for r in results
             if not r.has_polarity and r.component.comp_type == "capacitor"
         )
+        n_net_resolved = sum(
+            1 for c in raw_comps
+            if c.comp_type in ("diode", "led")
+            and getattr(c, "_cathode_pin_num", None) is not None
+        )
+        if n_net_resolved:
+            self.log.emit(
+                f"   Cathode resolved via net names: {n_net_resolved} diode(s)/LED(s)"
+            )
         self.log.emit(f"   Components: {len(components)}  |  Polar marked: {n_marked}")
         if n_unmarked_cap:
             self.log.emit(f"   ℹ️  {n_unmarked_cap} ceramic capacitors excluded (non-polar)")
+        if self.corrections:
+            self.log.emit(f"   ✎  Applying {len(self.corrections)} manual correction(s)")
         self.log.emit(f"\n📊 Summary: {n_marked} marked (ODB++ polarity, 99% confidence)")
 
-        # Render ODB++ directly to PDF
-        self.log.emit("\n🖨️  Rendering ODB++ → PDF with polarity markers …")
-        base = os.path.splitext(self.file_path)[0]
+        layers_on = [n for n, v in [("fab", self.draw_fab),
+                                     ("silk", self.draw_silk),
+                                     ("courtyard", self.draw_courtyard)] if v]
+        self.log.emit(
+            f"\n🖨️  Rendering ODB++ → PDF  "
+            f"[rétegek: {', '.join(layers_on) if layers_on else 'csak outline+markers'}] …"
+        )
+        base    = os.path.splitext(self.file_path)[0]
         out_pdf = base + "_polarity.pdf"
         try:
             render_odb_to_pdf(
                 self.file_path, out_pdf,
-                draw_cu=False, draw_fab=True, draw_silk=True,
-                draw_courtyard=False, mark_pin1=True, save_png=True,
+                draw_cu=False,
+                draw_fab=self.draw_fab,
+                draw_silk=self.draw_silk,
+                draw_courtyard=self.draw_courtyard,
+                mark_pin1=True, save_png=False,
+                overrides=self.corrections,
+                odb_comps_cache=raw_comps,
+                log_fn=self.log.emit,
             )
             self.log.emit(f"   📄 PDF saved: {out_pdf}")
-            out_png = out_pdf.replace(".pdf", "_preview.png")
-            if os.path.exists(out_png):
-                self.log.emit(f"   🖼  Preview:  {out_png}")
         except Exception as exc:
-            self.log.emit(f"   ⚠️  Render failed: {exc}")
+            self.log.emit(f"   ⚠️  Render failed: {exc}\n{traceback.format_exc()}")
             out_pdf = None
 
         self.progress.emit(100)
         self.log.emit("✅ Done.")
         self.finished.emit({
-            "results": results, "components": components,
-            "shapes": [], "markers": [],
-            "pdf_path": out_pdf,  # the rendered PDF
-            "_odb_rendered": True,  # flag: don't re-annotate
+            "results":       results,
+            "components":    components,
+            "shapes":        [],
+            "markers":       [],
+            "pdf_path":      out_pdf,
+            "_odb_rendered": True,
         })
 
     # ── Heuristic pipeline (PDF or DXF source) ────────────────────────────
 
     def _run_heuristic_pipeline(self, pages, pdf_path: Optional[str]) -> None:
-        """Full 3-pass heuristic detection; emits finished signal."""
-        results = self._heuristic_results(pages, None, pdf_path)
+        results     = self._heuristic_results(pages, None, pdf_path)
         n_marked    = sum(1 for r in results if r.polarity_status == "marked")
         n_unmarked  = sum(1 for r in results if r.polarity_status == "unmarked")
         n_ambiguous = sum(1 for r in results if r.polarity_status == "ambiguous")
@@ -289,29 +296,18 @@ class AnalysisWorker(QObject):
         )
         if n_marked == 0:
             self.log.emit("   ℹ️  No polarity markers detected in the file.")
-            self.log.emit("      Tip: load an ODB++ file alongside the PDF for exact pin-1 data.")
         self.progress.emit(100)
         self.log.emit("✅ Analysis complete.")
-        all_texts  = [t for p in pages for t in p.texts]
-        all_shapes = [s for p in pages for s in p.shapes]
         self.finished.emit({
             "results":    results,
             "components": [r.component for r in results],
-            "shapes":     all_shapes,
+            "shapes":     [s for p in pages for s in p.shapes],
             "markers":    [],
             "pdf_path":   pdf_path,
         })
 
-    def _heuristic_results(
-        self,
-        pages,
-        pre_detected_comps=None,
-        pdf_path: Optional[str] = None,
-    ) -> list:
-        """
-        Run the 3-pass heuristic detection and return merged MatchResult list.
-        If *pre_detected_comps* is given, skip component detection.
-        """
+    def _heuristic_results(self, pages, pre_detected_comps=None,
+                            pdf_path: Optional[str] = None) -> list:
         all_texts  = [t for p in pages for t in p.texts]
         all_shapes = [s for p in pages for s in p.shapes]
 
@@ -329,12 +325,10 @@ class AnalysisWorker(QObject):
         else:
             components = pre_detected_comps
 
-        # Pass 1
         self.log.emit("🔬 Pass 1 – text/shape …")
         markers = PolarityDetector(config=self.config).detect(all_texts, all_shapes)
         self.progress.emit(50)
 
-        # Pass 2
         self.log.emit("🔬 Pass 2 – pad asymmetry …")
         pad_results = PadAsymmetryDetector(config=self.config).detect(all_shapes, components)
         n_pad = sum(1 for r in pad_results if r.has_polarity)
@@ -342,7 +336,6 @@ class AnalysisWorker(QObject):
             self.log.emit(f"   pad_asymmetry / fab_pin1: {n_pad}")
         self.progress.emit(65)
 
-        # Pass 3
         img_results = []
         if pdf_path:
             self.log.emit("🔬 Pass 3 – OpenCV raster …")
@@ -354,7 +347,6 @@ class AnalysisWorker(QObject):
                 self.log.emit(f"   image markers: {n_img}")
         self.progress.emit(80)
 
-        # Merge
         self.log.emit("🔗 Matching …")
         text_results = Matcher(config=self.config).match(components, markers)
         pad_by_ref = {r.component.ref: r for r in pad_results}
@@ -382,11 +374,13 @@ class AnalysisWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self._pdf_path: str = ""
-        self._odb_path: str = ""
-        self._results: list = []
-        self._thread = None
-        self._worker = None
+        self._odb_path: str     = ""
+        self._results: list     = []
+        self._thread            = None
+        self._worker            = None
+        self._corrections: dict = {}
+        self._last_odb_path: str = ""
+        self._last_out_pdf:  str = ""
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -400,32 +394,12 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(10, 10, 10, 6)
         root.setSpacing(6)
 
-        # ── Input files group ─────────────────────────────────────────────
+        # ── Input ─────────────────────────────────────────────────────────
         input_group = QGroupBox("Input files")
         ig = QVBoxLayout(input_group)
-
-        # Row 1: PDF
-        pdf_row = QHBoxLayout()
-        self._pdf_edit = QLineEdit()
-        self._pdf_edit.setPlaceholderText(
-            "PCB source: ODB++ (.zip/.tgz — best) or assembly PDF …"
-        )
-        self._pdf_edit.setReadOnly(True)
-        pdf_browse = QPushButton("Browse…")
-        pdf_browse.setFixedWidth(90)
-        pdf_browse.clicked.connect(self._browse_pdf)
-        pdf_row.addWidget(QLabel("Source: "))
-        pdf_row.addWidget(self._pdf_edit)
-        pdf_row.addWidget(pdf_browse)
-        ig.addLayout(pdf_row)
-
-        # Row 2: ODB++
         odb_row = QHBoxLayout()
         self._odb_edit = QLineEdit()
-        self._odb_edit.setPlaceholderText(
-            "ODB++ source (optional — .tgz / .zip / directory) — "
-            "provides exact pin-1 positions …"
-        )
+        self._odb_edit.setPlaceholderText("ODB++ forrás (.tgz / .zip / könyvtár) …")
         self._odb_edit.setReadOnly(True)
         odb_browse = QPushButton("Browse…")
         odb_browse.setFixedWidth(90)
@@ -439,7 +413,6 @@ class MainWindow(QMainWindow):
         odb_row.addWidget(odb_browse)
         odb_row.addWidget(odb_clear)
         ig.addLayout(odb_row)
-
         root.addWidget(input_group)
 
         # ── Options row ───────────────────────────────────────────────────
@@ -447,13 +420,43 @@ class MainWindow(QMainWindow):
         self._debug_cb    = QCheckBox("Debug mode")
         self._save_pdf_cb = QCheckBox("Save annotated PDF")
         self._save_pdf_cb.setChecked(True)
+
+        self._fab_cb = QCheckBox("Fab")
+        self._fab_cb.setChecked(False)
+        self._fab_cb.setToolTip(
+            "Fab/assembly réteg — komponens testek körvonala.\n"
+            "Sok vonal (~7000+), lassabb render."
+        )
+        self._silk_cb = QCheckBox("Silkscreen")
+        self._silk_cb.setChecked(False)
+        self._silk_cb.setToolTip("Silkscreen réteg — feliratok, polaritás-szimbólumok.")
+        self._court_cb = QCheckBox("Courtyard")
+        self._court_cb.setChecked(True)
+        self._court_cb.setToolTip(
+            "Courtyard réteg — komponens-területek határvonala.\n"
+            "Kevés vonal, gyors."
+        )
+
         self._analyze_btn = QPushButton("🔍  Analyze")
         self._analyze_btn.setFixedWidth(140)
         self._analyze_btn.setEnabled(False)
         self._analyze_btn.clicked.connect(self._run_analysis)
+
+        self._rerender_btn = QPushButton("🔄  Re-render")
+        self._rerender_btn.setFixedWidth(120)
+        self._rerender_btn.setEnabled(False)
+        self._rerender_btn.setToolTip(
+            "Re-render the ODB++ PDF with current manual corrections applied"
+        )
+        self._rerender_btn.clicked.connect(self._rerender_odb)
+
         opt_row.addWidget(self._debug_cb)
         opt_row.addWidget(self._save_pdf_cb)
+        opt_row.addWidget(self._fab_cb)
+        opt_row.addWidget(self._silk_cb)
+        opt_row.addWidget(self._court_cb)
         opt_row.addStretch()
+        opt_row.addWidget(self._rerender_btn)
         opt_row.addWidget(self._analyze_btn)
         root.addLayout(opt_row)
 
@@ -486,6 +489,8 @@ class MainWindow(QMainWindow):
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setFont(QFont("Consolas", 9))
+        self._table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_table_context_menu)
         res_layout.addWidget(self._table)
 
         export_row = QHBoxLayout()
@@ -500,38 +505,17 @@ class MainWindow(QMainWindow):
         splitter.setSizes([380, 620])
         root.addWidget(splitter, 1)
 
-        self.statusBar().showMessage(
-            "Ready.  Load a PDF, DXF, or ODB++ file to begin."
-        )
+        self.statusBar().showMessage("Ready.  Load an ODB++ file to begin.")
 
     # ── File browse slots ─────────────────────────────────────────────────
 
     @Slot()
-    def _browse_pdf(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open PCB file", "",
-            "All supported (*.pdf *.dxf *.dwg *.zip *.tgz *.tar.gz);;"
-            "PDF (*.pdf);;"
-            "ODB++ (*.zip *.tgz *.tar.gz);;"
-            "DXF / DWG (*.dxf *.dwg);;"
-            "All Files (*)"
-        )
-        if path:
-            self._pdf_path = path
-            self._pdf_edit.setText(path)
-            self._analyze_btn.setEnabled(True)
-            self._reset_output()
-            self.statusBar().showMessage(f"Loaded: {os.path.basename(path)}")
-
-    @Slot()
     def _browse_odb(self) -> None:
-        # Try file first; if user picks a directory that won't work with getOpenFileName
         path, _ = QFileDialog.getOpenFileName(
             self, "Open ODB++ archive", "",
             "ODB++ archive (*.tgz *.tar.gz *.zip *.tar);;All Files (*)"
         )
         if not path:
-            # Offer directory selection as fallback
             path = QFileDialog.getExistingDirectory(
                 self, "Or select unzipped ODB++ directory", ""
             )
@@ -540,16 +524,15 @@ class MainWindow(QMainWindow):
             self._odb_edit.setText(path)
             self._analyze_btn.setEnabled(True)
             self._reset_output()
-            self.statusBar().showMessage(
-                f"ODB++: {os.path.basename(path)}  (will use for exact pin-1 positions)"
-            )
+            self._load_corrections_sidecar(path)
+            self.statusBar().showMessage(f"ODB++: {os.path.basename(path)}")
 
     @Slot()
     def _clear_odb(self) -> None:
         self._odb_path = ""
         self._odb_edit.clear()
-        self._analyze_btn.setEnabled(bool(self._pdf_path))
-        self.statusBar().showMessage("ODB++ cleared — heuristic PDF-only mode")
+        self._analyze_btn.setEnabled(False)
+        self.statusBar().showMessage("ODB++ cleared.")
 
     def _reset_output(self) -> None:
         self._log_view.clear()
@@ -561,7 +544,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _run_analysis(self) -> None:
-        if not self._pdf_path and not self._odb_path:
+        if not self._odb_path:
             return
         self._analyze_btn.setEnabled(False)
         self._export_btn.setEnabled(False)
@@ -571,13 +554,15 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Analyzing …")
 
         config = Config(debug=self._debug_cb.isChecked())
-        odb_path = self._odb_path if self._odb_path else None
-
-        # If no source PDF but ODB++ is set → pass ODB++ as primary file
-        primary = self._pdf_path if self._pdf_path else self._odb_path
-
         self._thread = QThread(self)
-        self._worker = AnalysisWorker(primary, config, odb_path=odb_path)
+        self._worker = AnalysisWorker(
+            self._odb_path, config,
+            odb_path=None,
+            corrections=self._corrections,
+            draw_fab=self._fab_cb.isChecked(),
+            draw_silk=self._silk_cb.isChecked(),
+            draw_courtyard=self._court_cb.isChecked(),
+        )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.log.connect(self._append_log)
@@ -587,7 +572,7 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._thread.quit)
         self._worker.error.connect(self._thread.quit)
         self._thread.finished.connect(
-            lambda: self._analyze_btn.setEnabled(bool(self._pdf_path or self._odb_path))
+            lambda: self._analyze_btn.setEnabled(bool(self._odb_path))
         )
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.start()
@@ -603,12 +588,11 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_finished(self, data: object) -> None:
-        # Re-enable buttons FIRST so they never stay stuck disabled
-        self._analyze_btn.setEnabled(bool(self._pdf_path or self._odb_path))
+        self._analyze_btn.setEnabled(bool(self._odb_path))
         self._export_btn.setEnabled(True)
 
-        results   = data["results"]
-        pdf_path  = data.get("pdf_path")
+        results      = data["results"]
+        pdf_path     = data.get("pdf_path")
         odb_rendered = data.get("_odb_rendered", False)
         self._results = results
         self._populate_table(results)
@@ -617,13 +601,16 @@ class MainWindow(QMainWindow):
             f"Done — {len(results)} components, {n_marked} with polarity markers."
         )
 
+        if odb_rendered and pdf_path:
+            self._last_odb_path = self._odb_path
+            self._last_out_pdf  = pdf_path
+            self._rerender_btn.setEnabled(True)
+
         if odb_rendered and pdf_path and os.path.exists(pdf_path):
-            # ODB++ was rendered directly — just offer to open
             reply = QMessageBox.question(
                 self, "Open rendered PDF?",
                 f"Polarity PDF rendered from ODB++:\n{pdf_path}\n\nOpen now?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
             )
             if reply == QMessageBox.Yes:
                 try:
@@ -647,8 +634,7 @@ class MainWindow(QMainWindow):
                 reply = QMessageBox.question(
                     self, "Open annotated PDF?",
                     f"Saved:\n{out_pdf}\n\nOpen now?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
                 )
                 if reply == QMessageBox.Yes:
                     try:
@@ -660,36 +646,155 @@ class MainWindow(QMainWindow):
                 self._append_log(
                     f"⚠️  Annotated PDF export failed:\n{traceback.format_exc()}"
                 )
-        elif not pdf_path:
-            self._append_log(
-                "\nℹ️  No PDF source — annotated overlay skipped.\n"
-                "   Use 💾 Export JSON to save the results."
-            )
 
     @Slot(str)
     def _on_error(self, msg: str) -> None:
         self._append_log(f"❌ Error:\n{msg}")
-        self._analyze_btn.setEnabled(bool(self._pdf_path or self._odb_path))
+        self._analyze_btn.setEnabled(bool(self._odb_path))
         self.statusBar().showMessage("Analysis failed.")
+
+    # ── Manual corrections ────────────────────────────────────────────────
+
+    @Slot(object)
+    def _on_table_context_menu(self, pos) -> None:
+        row = self._table.rowAt(pos.y())
+        if row < 0 or row >= len(self._results):
+            return
+        ref_item = self._table.item(row, COL_REF)
+        if not ref_item:
+            return
+        ref = ref_item.text().rstrip(" ✎")
+        menu = QMenu(self)
+        act_edit  = QAction(f"✏️  Edit polarity correction for {ref}", self)
+        act_clear = QAction(f"✕  Clear correction for {ref}", self)
+        act_edit.triggered.connect(lambda: self._open_correction_dialog(row, ref))
+        act_clear.triggered.connect(lambda: self._clear_correction(ref))
+        menu.addAction(act_edit)
+        if ref in self._corrections:
+            menu.addAction(act_clear)
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _open_correction_dialog(self, row: int, ref: str) -> None:
+        result    = self._results[row] if row < len(self._results) else None
+        comp_type = result.component.comp_type if result else "unknown"
+        current   = self._corrections.get(ref, {})
+        dlg = CorrectionDialog(ref, comp_type, current, parent=self)
+        if dlg.exec():
+            correction = dlg.get_correction()
+            if correction:
+                self._corrections[ref] = correction
+            elif ref in self._corrections:
+                del self._corrections[ref]
+            self._save_corrections_sidecar()
+            mark = " ✎" if correction else ""
+            ref_item = self._table.item(row, COL_REF)
+            if ref_item:
+                ref_item.setText(ref + mark)
+            if self._last_odb_path:
+                self._rerender_btn.setEnabled(True)
+                self._append_log(
+                    f"✎ Correction saved for {ref}. "
+                    "Click '🔄 Re-render' to update the PDF."
+                )
+
+    def _clear_correction(self, ref: str) -> None:
+        if ref in self._corrections:
+            del self._corrections[ref]
+            self._save_corrections_sidecar()
+            self._append_log(f"✕ Correction cleared for {ref}.")
+            self._populate_table(self._results)
+
+    @Slot()
+    def _rerender_odb(self) -> None:
+        odb_path = self._last_odb_path
+        out_pdf  = self._last_out_pdf
+        if not odb_path or not out_pdf:
+            QMessageBox.warning(self, "Re-render",
+                                "No ODB++ render to update yet.\nRun Analyze first.")
+            return
+        self._rerender_btn.setEnabled(False)
+        self._append_log("\n🔄 Re-rendering with corrections …")
+        try:
+            render_odb_to_pdf(
+                odb_path, out_pdf,
+                draw_cu=False,
+                draw_fab=self._fab_cb.isChecked(),
+                draw_silk=self._silk_cb.isChecked(),
+                draw_courtyard=self._court_cb.isChecked(),
+                mark_pin1=True, save_png=False,
+                overrides=self._corrections,
+                log_fn=self._append_log,
+            )
+            self._append_log(f"   PDF updated: {out_pdf}")
+            reply = QMessageBox.question(
+                self, "Open updated PDF?",
+                f"Re-rendered:\n{out_pdf}\n\nOpen now?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                try:
+                    os.startfile(out_pdf)
+                except Exception:
+                    import subprocess
+                    subprocess.Popen(["cmd", "/c", "start", "", out_pdf])
+        except Exception as exc:
+            self._append_log(f"❌ Re-render failed: {exc}")
+        finally:
+            self._rerender_btn.setEnabled(True)
+
+    # ── Corrections sidecar ───────────────────────────────────────────────
+
+    def _corrections_sidecar_path(self, odb_path: str) -> str:
+        return odb_path + ".corrections.json"
+
+    def _load_corrections_sidecar(self, odb_path: str) -> None:
+        path = self._corrections_sidecar_path(odb_path)
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                self._corrections = data.get("corrections", {})
+                n = len(self._corrections)
+                if n:
+                    self.statusBar().showMessage(
+                        f"Loaded {n} manual correction(s) from sidecar."
+                    )
+            except Exception:
+                self._corrections = {}
+
+    def _save_corrections_sidecar(self) -> None:
+        odb_path = self._last_odb_path or self._odb_path
+        if not odb_path:
+            return
+        path = self._corrections_sidecar_path(odb_path)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"corrections": self._corrections}, f,
+                          ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self._append_log(f"⚠️  Could not save corrections: {exc}")
+
+    # ── Export ────────────────────────────────────────────────────────────
 
     @Slot()
     def _export_json(self) -> None:
         if not self._results:
             return
-        base = os.path.splitext(self._pdf_path or self._odb_path or "output")[0]
-        default_name = base + "_polarity.json"
+        base = os.path.splitext(self._odb_path or "output")[0]
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save JSON", default_name,
+            self, "Save JSON", base + "_polarity.json",
             "JSON Files (*.json);;All Files (*)"
         )
         if not path:
             return
         try:
-            Exporter().export_json(self._results, path, self._pdf_path or path)
+            Exporter().export_json(self._results, path, self._odb_path or path)
             self.statusBar().showMessage(f"JSON saved: {path}")
             QMessageBox.information(self, "Export", f"JSON saved:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "Export Error", str(exc))
+
+    # ── Table ─────────────────────────────────────────────────────────────
 
     def _populate_table(self, results: list) -> None:
         self._table.setRowCount(0)
@@ -699,8 +804,9 @@ class MainWindow(QMainWindow):
             self._table.insertRow(row)
             marker_types = ", ".join(sorted(set(m.marker_type for m in result.markers)))
             conf_str = f"{result.overall_confidence:.0%}" if result.has_polarity else "—"
+            ref_text = comp.ref + (" ✎" if comp.ref in self._corrections else "")
             values = [
-                comp.ref, comp.comp_type, str(comp.page + 1),
+                ref_text, comp.comp_type, str(comp.page + 1),
                 result.polarity_status, conf_str, marker_types or "—",
             ]
             for col, val in enumerate(values):

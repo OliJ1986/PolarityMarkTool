@@ -33,6 +33,13 @@ from core.polarity_detector import PolarityMarker
 MM_TO_PT: float = 72.0 / 25.4
 INCH_TO_PT: float = 72.0
 
+# Net name keywords that identify the cathode (GND) side of a diode
+_GND_KEYWORDS = ("GND", "VSS", "AGND", "PGND", "DGND", "0V", "EARTH",
+                 "SGND", "CHASSIS", "PE", "SHIELD")
+# Net name keywords that identify the anode (supply) side
+_VCC_KEYWORDS = ("VCC", "VDD", "VIN", "VBUS", "VSUPPLY", "VMOT",
+                 "+5V", "+3V3", "+3.3V", "+12V", "+24V", "+48V", "AVCC")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal data classes
@@ -41,24 +48,56 @@ INCH_TO_PT: float = 72.0
 @dataclass
 class _ODBPin:
     number: int     # 1-based pin number
-    x: float        # absolute X in source units (mm)
-    y: float        # absolute Y in source units (mm)
+    x: float        # absolute X in source units
+    y: float        # absolute Y in source units
+    net_id: int = 0 # net index (used for cathode detection via netlist)
 
 
 @dataclass
 class _ODBComponent:
     ref: str
-    x: float            # centre X in mm
-    y: float            # centre Y in mm
+    x: float            # centre X in source units
+    y: float            # centre Y in source units
     rotation: float     # degrees
     mirrored: bool
     side: str = "top"   # "top" or "bot"
     pins: List[_ODBPin] = field(default_factory=list)
     package: str = ""   # PKG_TYPE from PRP line (IPC-7351 footprint name)
+    description: str = ""  # PRP Description value
+
+    # Set by resolve_polarity() — None means use heuristic
+    _cathode_pin_num: Optional[int] = field(default=None, repr=False)
+
+    def resolve_polarity(self, net_map: Dict[int, str]) -> None:
+        """Use net names from the ODB++ netlist to find the cathode pin.
+
+        Searches each pin's net name for GND-type keywords (→ cathode) or
+        VCC-type keywords (→ anode, so the *other* pin is cathode).
+        Only applied to diodes and LEDs.
+        """
+        if self.comp_type not in ("diode", "led"):
+            return
+        if len(self.pins) < 2:
+            return
+
+        # Pass 1: direct GND keyword → that pin is cathode
+        for pin in self.pins:
+            nm = net_map.get(pin.net_id, "").upper()
+            if any(kw in nm for kw in _GND_KEYWORDS):
+                self._cathode_pin_num = pin.number
+                return
+
+        # Pass 2: VCC keyword → the other pin is cathode
+        for pin in self.pins:
+            nm = net_map.get(pin.net_id, "").upper()
+            if any(kw in nm for kw in _VCC_KEYWORDS):
+                others = [p for p in self.pins if p.number != pin.number]
+                if others:
+                    self._cathode_pin_num = others[0].number
+                    return
 
     @property
     def pin1(self) -> Optional[_ODBPin]:
-        """Return pin number 1, or the first pin if available."""
         for p in self.pins:
             if p.number == 1:
                 return p
@@ -66,7 +105,6 @@ class _ODBComponent:
 
     @property
     def pin2(self) -> Optional[_ODBPin]:
-        """Return pin number 2 (useful for diode cathode)."""
         for p in self.pins:
             if p.number == 2:
                 return p
@@ -74,20 +112,25 @@ class _ODBComponent:
 
     @property
     def polarity_pin(self) -> Optional[_ODBPin]:
-        """Return the pin to mark for polarity.
+        """Pin to mark for polarity.
 
-        - Diodes / LEDs: mark pin **2** (cathode) because the physical
-          PCB marking (band) indicates the cathode side, while ODB++
-          pin 1 is the anode.
-        - All other components: mark pin 1.
+        - Diodes / LEDs: the cathode pin determined by:
+            1. Net-name lookup (most reliable, via resolve_polarity())
+            2. Fallback: pin 2 (standard SMD diode convention: pin1=anode, pin2=cathode)
+        - All other components: pin 1.
         """
         if self.comp_type in ("diode", "led"):
+            if self._cathode_pin_num is not None:
+                for p in self.pins:
+                    if p.number == self._cathode_pin_num:
+                        return p
+            # Fallback heuristic: pin 2 = cathode for 2-pin SMD diodes
             return self.pin2 or self.pin1
         return self.pin1
 
     @property
     def pin_span_mm(self) -> float:
-        """Max span of pin positions in mm (rough component body size)."""
+        """Max span between pin positions in source units."""
         if len(self.pins) < 2:
             return 0.0
         xs = [p.x for p in self.pins]
@@ -103,37 +146,21 @@ class _ODBComponent:
 
     @property
     def is_polar(self) -> bool:
-        """True if this component typically carries a polarity marker.
-
-        Ceramic capacitors (IPC-7351 prefix CAPC, or small 2-pin caps
-        without electrolytic/tantalum package indicator) are non-polar
-        and are excluded.
-        """
         ctype = self.comp_type
         if ctype not in POLAR_TYPES:
             return False
-        # Ceramic capacitors are non-polar
         if ctype == "capacitor" and self._is_ceramic_cap():
             return False
         return True
 
     def _is_ceramic_cap(self) -> bool:
-        """Heuristic: detect non-polar ceramic / film capacitors.
-
-        Returns True if the package/properties indicate a non-polar cap.
-        Electrolytic (CAPE*, CAPPR*), tantalum (CAPT*) remain polar.
-        """
         pkg = self.package.upper()
         if pkg:
-            # IPC-7351 naming: CAPC = ceramic chip, CAPMP = metallized polyester
-            # Polar caps: CAPE (electrolytic), CAPPR (radial polar), CAPT (tantalum)
             if pkg.startswith("CAPC") or pkg.startswith("CAPMP"):
                 return True
             if pkg.startswith("CAPE") or pkg.startswith("CAPPR") or pkg.startswith("CAPT"):
                 return False
-        # Heuristic: 2-pin small caps (≤1210) are very likely ceramic
         if len(self.pins) == 2 and self.pin_span_mm < 5.0:
-            # Without explicit polar package info, assume ceramic
             if not pkg or not any(kw in pkg for kw in ("EL", "POL", "TANT", "ELKO")):
                 return True
         return False
@@ -157,13 +184,18 @@ _RE_CMP = re.compile(
 # TOP <pad_idx> <abs_x> <abs_y> <rot> <N/Y> <net_id> <subnet> <pin_number>
 _RE_TOP = re.compile(
     r"^TOP\s+\d+\s+"
-    r"([\d.eE+-]+)\s+([\d.eE+-]+)\s+"
-    r"[\d.eE+-]+\s+"
-    r"[NY]\s+"
-    r"\d+\s+\d+\s+"
-    r"(\d+)",
+    r"([\d.eE+-]+)\s+([\d.eE+-]+)\s+"  # x, y
+    r"[\d.eE+-]+\s+"                    # rotation (skip)
+    r"[NY]\s+"                          # mirrored (skip)
+    r"(\d+)\s+\d+\s+"                  # net_id (capture), subnet (skip)
+    r"(\d+)",                           # pin_number
     re.IGNORECASE,
 )
+
+# PRP PKG_TYPE 'value'
+_RE_PRP_PKG = re.compile(r"^PRP\s+PKG_TYPE\s+'([^']*)'", re.IGNORECASE)
+# PRP Description 'value'
+_RE_PRP_DESC = re.compile(r"^PRP\s+Description\s+'([^']*)'", re.IGNORECASE)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -201,6 +233,17 @@ class ODBParser:
             names = zf.namelist()
             comps: List[_ODBComponent] = []
             scale = MM_TO_PT
+
+            # Build net map from cadnet netlist
+            net_map = {}
+            for netlist_path in ("netlists/cadnet/netlist",):
+                nl_cands = [n for n in names if n.lower().endswith(netlist_path)]
+                if nl_cands:
+                    net_map = self._parse_netlist(
+                        zf.read(nl_cands[0]).decode("utf-8", errors="replace")
+                    )
+                    break
+
             for side in ("top", "bot"):
                 pattern = f"comp_+_{side}/components"
                 candidates = [n for n in names if n.endswith(pattern)]
@@ -208,7 +251,10 @@ class ODBParser:
                     continue
                 content = zf.read(candidates[0]).decode("utf-8", errors="replace")
                 scale = self._detect_scale(content)
-                comps.extend(self._parse_components(content, side))
+                batch = self._parse_components(content, side)
+                for c in batch:
+                    c.resolve_polarity(net_map)
+                comps.extend(batch)
             if not comps:
                 raise FileNotFoundError(
                     f"No comp_+_top/components found in ZIP.\n"
@@ -225,6 +271,20 @@ class ODBParser:
             names = tf.getnames()
             comps: List[_ODBComponent] = []
             scale = MM_TO_PT
+
+            # Build net map from cadnet netlist
+            net_map = {}
+            for netlist_suffix in ("netlists/cadnet/netlist",):
+                nl_cands = [n for n in names
+                            if n.lower().replace("\\", "/").endswith(netlist_suffix)]
+                if nl_cands:
+                    f = tf.extractfile(tf.getmember(nl_cands[0]))
+                    if f:
+                        net_map = self._parse_netlist(
+                            f.read().decode("utf-8", errors="replace")
+                        )
+                    break
+
             for side in ("top", "bot"):
                 pattern = f"comp_+_{side}/components"
                 candidates = [n for n in names if n.endswith(pattern)]
@@ -233,7 +293,10 @@ class ODBParser:
                 f = tf.extractfile(tf.getmember(candidates[0]))
                 content = f.read().decode("utf-8", errors="replace")
                 scale = self._detect_scale(content)
-                comps.extend(self._parse_components(content, side))
+                batch = self._parse_components(content, side)
+                for c in batch:
+                    c.resolve_polarity(net_map)
+                comps.extend(batch)
             if not comps:
                 raise FileNotFoundError(
                     f"No comp_+_top/components in TGZ.\nContents: {names[:30]}"
@@ -245,6 +308,19 @@ class ODBParser:
     def _from_dir(self, dir_path: str) -> Tuple[List[_ODBComponent], float]:
         comps: List[_ODBComponent] = []
         scale = MM_TO_PT
+        net_map = {}
+
+        # Try to find cadnet netlist
+        for root, _dirs, files in os.walk(dir_path):
+            if "netlist" in files and "cadnet" in root.lower():
+                fpath = os.path.join(root, "netlist")
+                try:
+                    with open(fpath, encoding="utf-8", errors="replace") as fh:
+                        net_map = self._parse_netlist(fh.read())
+                except Exception:
+                    pass
+                break
+
         for side in ("top", "bot"):
             for root, _dirs, files in os.walk(dir_path):
                 dirname = os.path.basename(root).lower()
@@ -253,7 +329,10 @@ class ODBParser:
                     with open(fpath, encoding="utf-8", errors="replace") as fh:
                         content = fh.read()
                     scale = self._detect_scale(content)
-                    comps.extend(self._parse_components(content, side))
+                    batch = self._parse_components(content, side)
+                    for c in batch:
+                        c.resolve_polarity(net_map)
+                    comps.extend(batch)
         if not comps:
             raise FileNotFoundError(f"No comp_+_top/components under: {dir_path}")
         return comps, scale
@@ -269,6 +348,25 @@ class ODBParser:
                     return INCH_TO_PT
                 return MM_TO_PT
         return MM_TO_PT
+
+    # ── Netlist parser (cadnet format: "$0 NET_NAME") ─────────────────────
+
+    @staticmethod
+    def _parse_netlist(content: str) -> Dict[int, str]:
+        """Parse ODB++ cadnet netlist → {net_id: net_name}."""
+        net_map: Dict[int, str] = {}
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("H "):
+                continue
+            if line.startswith("$"):
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    try:
+                        net_map[int(parts[0][1:])] = parts[1].strip()
+                    except ValueError:
+                        pass
+        return net_map
 
     # ── Component file parser ─────────────────────────────────────────────
 
@@ -298,23 +396,26 @@ class ODBParser:
             if current is None:
                 continue
 
-            # Parse PKG_TYPE property for package identification
-            if line.startswith("PRP ") and "PKG_TYPE" in line.upper():
-                # PRP PKG_TYPE 'CAPC1709X90N'
-                m_prp = re.match(
-                    r"^PRP\s+PKG_TYPE\s+'([^']*)'",
-                    line, re.IGNORECASE,
-                )
-                if m_prp:
-                    current.package = m_prp.group(1)
+            # Parse PKG_TYPE property
+            mp = _RE_PRP_PKG.match(line)
+            if mp:
+                current.package = mp.group(1)
                 continue
 
+            # Parse Description property
+            md = _RE_PRP_DESC.match(line)
+            if md:
+                current.description = md.group(1)
+                continue
+
+            # Parse TOP line (pad / pin)
             m = _RE_TOP.match(line)
             if m:
                 current.pins.append(_ODBPin(
-                    number=int(m.group(3)),
                     x=float(m.group(1)),
                     y=float(m.group(2)),
+                    net_id=int(m.group(3)),
+                    number=int(m.group(4)),
                 ))
         return components
 
@@ -338,16 +439,11 @@ class ODBParser:
                 center=Point(cx_pt, cy_pt),
                 page=0,
             )
-            # Use polarity_pin: for diodes → cathode (pin 2), else → pin 1
             p_pin = oc.polarity_pin
             if p_pin is not None and oc.is_polar:
                 p1x = p_pin.x * unit_scale
                 p1y = p_pin.y * unit_scale
-                # Determine marker type label
-                if oc.comp_type in ("diode", "led"):
-                    mtype = "cathode_odb"
-                else:
-                    mtype = "pin1_odb"
+                mtype = "cathode_odb" if oc.comp_type in ("diode", "led") else "pin1_odb"
                 marker = PolarityMarker(
                     marker_type=mtype,
                     bbox=BoundingBox(p1x - 2, p1y - 2, p1x + 2, p1y + 2),
@@ -381,6 +477,3 @@ def parse_odb(path: str) -> "List[MatchResult]":
 def parse_odb_raw(path: str):
     """Return (odb_components, unit_scale) for coordinate registration."""
     return ODBParser()._load(path)
-
-
-

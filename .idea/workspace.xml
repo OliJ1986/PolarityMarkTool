@@ -4,34 +4,14 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/PolarityMarkTool.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/copilot.data.migration.ask2agent.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/Project_Default.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/app.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/component_detector.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/component_shape_assign.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/dxf_parser.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/exporter.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/image_polarity_detector.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/matcher.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/odb_parser.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/odb_registration.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/odb_renderer.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/pdf_parser.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/core/polarity_detector.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/gui/main_window.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/utils/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/utils/config.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/utils/geometry.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/utils/hull.py" afterDir="false" />
+    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="First Initial Commit">
+      <change afterPath="$PROJECT_DIR$/gui/correction_dialog.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/component_detector.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/component_detector.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/exporter.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/exporter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/odb_parser.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_parser.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/odb_renderer.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_renderer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/main_window.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -48,8 +28,8 @@
   </component>
   <component name="CopilotUserSelectedModel">
     <selectedModels>
-      <entry key="chat-panel" value="Claude Opus 4.6" />
-      <entry key="agent-panel" value="Claude Opus 4.6" />
+      <entry key="chat-panel" value="Claude Sonnet 4.6" />
+      <entry key="agent-panel" value="Claude Sonnet 4.6" />
     </selectedModels>
   </component>
   <component name="Git.Settings">
@@ -69,6 +49,7 @@
     "Python._test_color_filter.executor": "Run",
     "Python.app.executor": "Run",
     "Python.dxf_parser.executor": "Run",
+    "Python.main_window.executor": "Run",
     "Python.odb_parser.executor": "Run",
     "Python.odb_registration.executor": "Run",
     "Python.odb_renderer.executor": "Run",
@@ -101,7 +82,28 @@
       <option name="presentableId" value="Default" />
       <updated>1774272968781</updated>
     </task>
+    <task id="LOCAL-00001" summary="First Initial Commit">
+      <option name="closed" value="true" />
+      <created>1774449267434</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1774449267434</updated>
+    </task>
+    <task id="LOCAL-00002" summary="First Initial Commit">
+      <option name="closed" value="true" />
+      <created>1774449319432</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1774449319432</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="First Initial Commit" />
+    <option name="LAST_COMMIT_MESSAGE" value="First Initial Commit" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
