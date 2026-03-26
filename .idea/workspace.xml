@@ -4,12 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="First Initial Commit">
-      <change afterPath="$PROJECT_DIR$/gui/correction_dialog.py" afterDir="false" />
+    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Enhance component detection and add polarity correction dialog&#10;&#10;- Updated component detection patterns to include additional types (regulators, converters, etc.).&#10;- Introduced a new dialog for manually correcting component polarity markings.&#10;- Improved handling of ODB++ netlist parsing to resolve cathode pins for diodes and LEDs.&#10;- Added functionality for saving and loading manual corrections from a sidecar JSON file.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/component_detector.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/component_detector.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/exporter.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/exporter.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/odb_parser.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_parser.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/core/odb_renderer.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_renderer.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/main_window.py" afterDir="false" />
     </list>
@@ -24,12 +20,12 @@
     </persistenceIdMap>
   </component>
   <component name="CopilotUserSelectedChatMode">
-    <option name="chatModeId" value="Agent" />
+    <option name="chatModeId" value="Ask" />
   </component>
   <component name="CopilotUserSelectedModel">
     <selectedModels>
-      <entry key="chat-panel" value="Claude Sonnet 4.6" />
-      <entry key="agent-panel" value="Claude Sonnet 4.6" />
+      <entry key="chat-panel" value="GPT-4.1" />
+      <entry key="agent-panel" value="GPT-4.1" />
     </selectedModels>
   </component>
   <component name="Git.Settings">
@@ -98,22 +94,29 @@
       <option name="project" value="LOCAL" />
       <updated>1774449319432</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="Enhance component detection and add polarity correction dialog&#10;&#10;- Updated component detection patterns to include additional types (regulators, converters, etc.).&#10;- Introduced a new dialog for manually correcting component polarity markings.&#10;- Improved handling of ODB++ netlist parsing to resolve cathode pins for diodes and LEDs.&#10;- Added functionality for saving and loading manual corrections from a sidecar JSON file.">
+      <option name="closed" value="true" />
+      <created>1774523790842</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1774523790842</updated>
+    </task>
+    <task id="LOCAL-00004" summary="Enhance component detection and add polarity correction dialog&#10;&#10;- Updated component detection patterns to include additional types (regulators, converters, etc.).&#10;- Introduced a new dialog for manually correcting component polarity markings.&#10;- Improved handling of ODB++ netlist parsing to resolve cathode pins for diodes and LEDs.&#10;- Added functionality for saving and loading manual corrections from a sidecar JSON file.">
+      <option name="closed" value="true" />
+      <created>1774523957496</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1774523957496</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="First Initial Commit" />
-    <option name="LAST_COMMIT_MESSAGE" value="First Initial Commit" />
-  </component>
-  <component name="XDebuggerManager">
-    <breakpoint-manager>
-      <breakpoints>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/main.py</url>
-          <option name="timeStamp" value="1" />
-        </line-breakpoint>
-      </breakpoints>
-    </breakpoint-manager>
+    <MESSAGE value="Enhance component detection and add polarity correction dialog&#10;&#10;- Updated component detection patterns to include additional types (regulators, converters, etc.).&#10;- Introduced a new dialog for manually correcting component polarity markings.&#10;- Improved handling of ODB++ netlist parsing to resolve cathode pins for diodes and LEDs.&#10;- Added functionality for saving and loading manual corrections from a sidecar JSON file." />
+    <option name="LAST_COMMIT_MESSAGE" value="Enhance component detection and add polarity correction dialog&#10;&#10;- Updated component detection patterns to include additional types (regulators, converters, etc.).&#10;- Introduced a new dialog for manually correcting component polarity markings.&#10;- Improved handling of ODB++ netlist parsing to resolve cathode pins for diodes and LEDs.&#10;- Added functionality for saving and loading manual corrections from a sidecar JSON file." />
   </component>
   <component name="github-copilot-workspace">
     <instructionFileLocations>

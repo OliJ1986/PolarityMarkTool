@@ -72,6 +72,7 @@ class AnalysisWorker(QObject):
         draw_fab: bool = False,
         draw_silk: bool = False,
         draw_courtyard: bool = True,
+        draw_notes: bool = False,
     ):
         super().__init__()
         self.file_path      = file_path
@@ -81,6 +82,7 @@ class AnalysisWorker(QObject):
         self.draw_fab       = draw_fab
         self.draw_silk      = draw_silk
         self.draw_courtyard = draw_courtyard
+        self.draw_notes     = draw_notes
 
     @Slot()
     def run(self) -> None:
@@ -248,7 +250,8 @@ class AnalysisWorker(QObject):
 
         layers_on = [n for n, v in [("fab", self.draw_fab),
                                      ("silk", self.draw_silk),
-                                     ("courtyard", self.draw_courtyard)] if v]
+                                     ("courtyard", self.draw_courtyard),
+                                     ("notes", self.draw_notes)] if v]
         self.log.emit(
             f"\n🖨️  Rendering ODB++ → PDF  "
             f"[rétegek: {', '.join(layers_on) if layers_on else 'csak outline+markers'}] …"
@@ -262,6 +265,7 @@ class AnalysisWorker(QObject):
                 draw_fab=self.draw_fab,
                 draw_silk=self.draw_silk,
                 draw_courtyard=self.draw_courtyard,
+                draw_notes=self.draw_notes,
                 mark_pin1=True, save_png=False,
                 overrides=self.corrections,
                 odb_comps_cache=raw_comps,
@@ -381,6 +385,7 @@ class MainWindow(QMainWindow):
         self._corrections: dict = {}
         self._last_odb_path: str = ""
         self._last_out_pdf:  str = ""
+        self._last_json_path: str = ""
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -436,6 +441,11 @@ class MainWindow(QMainWindow):
             "Courtyard réteg — komponens-területek határvonala.\n"
             "Kevés vonal, gyors."
         )
+        self._notes_cb = QCheckBox("Notes/User Drawing")
+        self._notes_cb.setChecked(True)
+        self._notes_cb.setToolTip(
+            "Notes/User Drawing réteg — gyakran itt van a fejléc/lábléc, rajzkeret."
+        )
 
         self._analyze_btn = QPushButton("🔍  Analyze")
         self._analyze_btn.setFixedWidth(140)
@@ -455,6 +465,7 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(self._fab_cb)
         opt_row.addWidget(self._silk_cb)
         opt_row.addWidget(self._court_cb)
+        opt_row.addWidget(self._notes_cb)
         opt_row.addStretch()
         opt_row.addWidget(self._rerender_btn)
         opt_row.addWidget(self._analyze_btn)
@@ -480,6 +491,12 @@ class MainWindow(QMainWindow):
 
         res_group = QGroupBox("Results")
         res_layout = QVBoxLayout(res_group)
+        self._results_search = QLineEdit()
+        self._results_search.setPlaceholderText(
+            "Keresés: ref / type / status / marker …"
+        )
+        self._results_search.textChanged.connect(self._apply_results_filter)
+        res_layout.addWidget(self._results_search)
         headers = ["Ref", "Type", "Page", "Status", "Confidence", "Marker types"]
         self._table = QTableWidget(0, len(headers))
         self._table.setHorizontalHeaderLabels(headers)
@@ -525,6 +542,7 @@ class MainWindow(QMainWindow):
             self._analyze_btn.setEnabled(True)
             self._reset_output()
             self._load_corrections_sidecar(path)
+            self._load_session_json(path)
             self.statusBar().showMessage(f"ODB++: {os.path.basename(path)}")
 
     @Slot()
@@ -562,6 +580,7 @@ class MainWindow(QMainWindow):
             draw_fab=self._fab_cb.isChecked(),
             draw_silk=self._silk_cb.isChecked(),
             draw_courtyard=self._court_cb.isChecked(),
+            draw_notes=self._notes_cb.isChecked(),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -647,6 +666,10 @@ class MainWindow(QMainWindow):
                     f"⚠️  Annotated PDF export failed:\n{traceback.format_exc()}"
                 )
 
+        # Auto-save: machine-readable results JSON + session state for later resume.
+        self._auto_save_results_json()
+        self._save_session_json()
+
     @Slot(str)
     def _on_error(self, msg: str) -> None:
         self._append_log(f"❌ Error:\n{msg}")
@@ -696,6 +719,7 @@ class MainWindow(QMainWindow):
                     f"✎ Correction saved for {ref}. "
                     "Click '🔄 Re-render' to update the PDF."
                 )
+            self._save_session_json()
 
     def _clear_correction(self, ref: str) -> None:
         if ref in self._corrections:
@@ -703,6 +727,7 @@ class MainWindow(QMainWindow):
             self._save_corrections_sidecar()
             self._append_log(f"✕ Correction cleared for {ref}.")
             self._populate_table(self._results)
+            self._save_session_json()
 
     @Slot()
     def _rerender_odb(self) -> None:
@@ -721,6 +746,7 @@ class MainWindow(QMainWindow):
                 draw_fab=self._fab_cb.isChecked(),
                 draw_silk=self._silk_cb.isChecked(),
                 draw_courtyard=self._court_cb.isChecked(),
+                draw_notes=self._notes_cb.isChecked(),
                 mark_pin1=True, save_png=False,
                 overrides=self._corrections,
                 log_fn=self._append_log,
@@ -774,6 +800,79 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._append_log(f"⚠️  Could not save corrections: {exc}")
 
+    # ── Auto-save / restore session JSON ─────────────────────────────────
+
+    def _results_json_path(self, odb_path: str) -> str:
+        return os.path.splitext(odb_path)[0] + "_polarity.json"
+
+    def _session_json_path(self, odb_path: str) -> str:
+        return odb_path + ".session.json"
+
+    def _auto_save_results_json(self) -> None:
+        if not self._odb_path or not self._results:
+            return
+        path = self._results_json_path(self._odb_path)
+        try:
+            out = Exporter().export_json(self._results, path, self._odb_path)
+            self._last_json_path = out
+            self._append_log(f"💾 Auto JSON saved: {out}")
+        except Exception as exc:
+            self._append_log(f"⚠️  Auto JSON save failed: {exc}")
+
+    def _save_session_json(self) -> None:
+        if not self._odb_path:
+            return
+        path = self._session_json_path(self._odb_path)
+        payload = {
+            "version": 1,
+            "odb_path": self._odb_path,
+            "last_out_pdf": self._last_out_pdf,
+            "last_json_path": self._last_json_path,
+            "options": {
+                "fab": self._fab_cb.isChecked(),
+                "silk": self._silk_cb.isChecked(),
+                "courtyard": self._court_cb.isChecked(),
+                "notes": self._notes_cb.isChecked() if hasattr(self, "_notes_cb") else False,
+            },
+            "corrections": self._corrections,
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self._append_log(f"⚠️  Could not save session JSON: {exc}")
+
+    def _load_session_json(self, odb_path: str) -> None:
+        path = self._session_json_path(odb_path)
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            opts = data.get("options", {})
+            if "fab" in opts:
+                self._fab_cb.setChecked(bool(opts.get("fab")))
+            if "silk" in opts:
+                self._silk_cb.setChecked(bool(opts.get("silk")))
+            if "courtyard" in opts:
+                self._court_cb.setChecked(bool(opts.get("courtyard")))
+            if hasattr(self, "_notes_cb") and "notes" in opts:
+                self._notes_cb.setChecked(bool(opts.get("notes")))
+
+            # Session corrections are a fallback; explicit sidecar still wins.
+            sess_corr = data.get("corrections", {})
+            if isinstance(sess_corr, dict) and sess_corr and not self._corrections:
+                self._corrections = sess_corr
+
+            self._last_out_pdf = data.get("last_out_pdf", "") or ""
+            self._last_json_path = data.get("last_json_path", "") or ""
+            if self._last_out_pdf:
+                self._last_odb_path = odb_path
+                self._rerender_btn.setEnabled(True)
+            self._append_log(f"↩ Loaded session JSON: {path}")
+        except Exception as exc:
+            self._append_log(f"⚠️  Session JSON load failed: {exc}")
+
     # ── Export ────────────────────────────────────────────────────────────
 
     @Slot()
@@ -816,3 +915,18 @@ class MainWindow(QMainWindow):
                 if bg:
                     item.setBackground(bg)
                 self._table.setItem(row, col, item)
+        self._apply_results_filter()
+
+    @Slot(str)
+    def _apply_results_filter(self, _text: str = "") -> None:
+        needle = self._results_search.text().strip().lower() if hasattr(self, "_results_search") else ""
+        for row in range(self._table.rowCount()):
+            if not needle:
+                self._table.setRowHidden(row, False)
+                continue
+            hay = []
+            for col in (COL_REF, COL_TYPE, COL_STATUS, COL_MARKERS):
+                item = self._table.item(row, col)
+                if item and item.text():
+                    hay.append(item.text().lower())
+            self._table.setRowHidden(row, needle not in " | ".join(hay))

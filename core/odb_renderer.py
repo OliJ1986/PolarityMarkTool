@@ -37,10 +37,11 @@ _ROLE_COLORS = {
     "silk_top":      (0.55, 0.0,  0.55),
     "fab_top":       (0.20, 0.20, 0.72),
     "courtyard_top": (0.0,  0.55, 0.55),
+    "notes_top":     (0.35, 0.35, 0.35),
     "profile":       (0.0,  0.0,  0.0),
 }
-_GREEN  = (0.05, 0.65, 0.05)
-_ORANGE = (0.85, 0.40, 0.0)
+_HIGHLIGHT_GREEN  = (0.20, 0.95, 0.08)   # bright green highlighter
+_HIGHLIGHT_ORANGE = (1.00, 0.62, 0.00)   # orange highlighter
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -165,6 +166,14 @@ def _discover_layers(mls: List[_MatrixLayer]) -> Dict[str, str]:
         (ml.name for ml in mls if "courtyard" in ml.name
          and "bot" not in ml.name and "b." not in ml.name),None)
     r["courtyard_top"] = court
+    notes = (
+        _find("f.user") or _find("user", "drawing") or _find("dwgs", "user")
+        or _find("cmts", "user") or _find("comment") or _find("notes")
+        or next((ml.name for ml in mls
+                 if any(k in ml.name for k in ("user", "dwgs", "cmts", "comment", "notes", "drawing"))
+                 and "bot" not in ml.name and "b." not in ml.name), None)
+    )
+    r["notes_top"] = notes
     return {k:v for k,v in r.items() if v}
 
 def _detect_units(content: str) -> str:
@@ -190,39 +199,38 @@ def _parse_profile(content: str) -> List[Tuple[float,float]]:
 
 def _draw_polarity_marker(page, px:float, py:float, cx:float, cy:float,
                            r:float, color:tuple, is_two_pin:bool, oc:int) -> None:
-    """D-shaped (semicircle) for 2-pin SMD, full circle for multi-pin.
-
-    The flat side of the D faces the component centre so the marker
-    visually 'clips' to the component body edge.
+    """Draw a small highlighter-like stroke inside the component body.
+    The stroke is oriented perpendicular to the pin→center direction and
+    shifted slightly inward so it looks like a marker dab on the component.
     """
-    if is_two_pin:
-        dx, dy = cx - px, cy - py
-        dist = math.hypot(dx, dy)
-        if dist > 1e-3:
-            dx /= dist; dy /= dist
-            # start_pt is 90° CCW from the inward direction,
-            # placed at radius r from the pin.
-            # sweep -180° clockwise → outer half-disk
-            outward = math.atan2(-dy, -dx)
-            sp = fitz.Point(px + r * math.cos(outward - math.pi/2),
-                             py + r * math.sin(outward - math.pi/2))
-            try:
-                page.draw_sector(fitz.Point(px,py), sp, -180,
-                                 fullSector=True, color=color, fill=color,
-                                 fill_opacity=0.60, stroke_opacity=0.85,
-                                 width=0.5, oc=oc)
-            except TypeError:
-                page.draw_sector(fitz.Point(px,py), sp, -180,
-                                 fullSector=True, color=color, fill=color,
-                                 width=0.5, oc=oc)
-            return
-    # Fallback or multi-pin
+    _ = is_two_pin  # currently same visual style for 2-pin and multi-pin
+    dx, dy = cx - px, cy - py
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6:
+        ux, uy = 0.0, -1.0
+    else:
+        ux, uy = dx / dist, dy / dist
+
+    # Tangent direction gives an oriented highlight dash.
+    tx, ty = -uy, ux
+    mx = px + ux * max(0.9, r * 0.70)
+    my = py + uy * max(0.9, r * 0.70)
+    half_len = max(1.2, r * 0.85)
+
+    p1 = fitz.Point(mx - tx * half_len, my - ty * half_len)
+    p2 = fitz.Point(mx + tx * half_len, my + ty * half_len)
+    width = max(1.4, r * 1.05)
+
     try:
-        page.draw_circle(fitz.Point(px,py), r, color=color, fill=color,
-                         fill_opacity=0.55, stroke_opacity=0.9, width=0.4, oc=oc)
+        page.draw_line(
+            p1, p2,
+            color=color,
+            width=width,
+            stroke_opacity=0.42,
+            oc=oc,
+        )
     except TypeError:
-        page.draw_circle(fitz.Point(px,py), r, color=color, fill=color,
-                         width=0.4, oc=oc)
+        page.draw_line(p1, p2, color=color, width=width, oc=oc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,6 +245,7 @@ def render_odb_to_pdf(
     draw_fab: bool = True,
     draw_cu: bool = False,
     draw_silk: bool = True,
+    draw_notes: bool = False,
     mark_pin1: bool = True,
     save_png: bool = True,
     margin_mm: float = 2.0,
@@ -273,7 +282,8 @@ def render_odb_to_pdf(
     mc = reader.read("matrix/matrix")
     role_map = _discover_layers(_parse_matrix(mc)) if mc else {
         "copper_top":"f.cu","silk_top":"f.silkscreen",
-        "fab_top":"f.fab","courtyard_top":"f.courtyard"}
+        "fab_top":"f.fab","courtyard_top":"f.courtyard",
+        "notes_top":"f.user"}
 
     pc = reader.read("steps/pcb/profile")
     inch_mode = (pc is not None and _detect_units(pc) == "INCH")
@@ -302,6 +312,7 @@ def render_odb_to_pdf(
     ocg_fab     = doc.add_ocg("Fab / Assembly",  on=True)
     ocg_silk    = doc.add_ocg("Silkscreen",      on=True)
     ocg_court   = doc.add_ocg("Courtyard",       on=draw_courtyard)
+    ocg_notes   = doc.add_ocg("Notes / User Drawing", on=draw_notes)
     ocg_labels  = doc.add_ocg("Reference labels",on=True)
     ocg_markers = doc.add_ocg("Polarity markers",on=True)
 
@@ -327,6 +338,8 @@ def render_odb_to_pdf(
         plan.append(("fab_top",role_map["fab_top"],ocg_fab))
     if draw_silk and "silk_top" in role_map:
         plan.append(("silk_top",role_map["silk_top"],ocg_silk))
+    if draw_notes and "notes_top" in role_map:
+        plan.append(("notes_top", role_map["notes_top"], ocg_notes))
 
     for role, folder, ocg in plan:
         _log(f"   [render] Reading layer '{folder}' …")
@@ -450,7 +463,7 @@ def render_odb_to_pdf(
             span_mm  = oc.pin_span_mm * coord_to_mm
             marker_r = max(1.0, min(base_r*1.5, span_mm*0.30*MM_TO_PT)) if span_mm>0 else base_r
             _draw_polarity_marker(page, px_,py_, cx_,cy_, marker_r,
-                                  _ORANGE if oc.comp_type in ("diode","led") else _GREEN,
+                                  _HIGHLIGHT_ORANGE if oc.comp_type in ("diode","led") else _HIGHLIGHT_GREEN,
                                   len(oc.pins)==2, ocg_markers)
         _log("   [render] Polarity markers done.")
 
