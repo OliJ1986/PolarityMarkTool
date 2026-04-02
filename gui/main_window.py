@@ -940,8 +940,17 @@ class MainWindow(QMainWindow):
     # ── Table ─────────────────────────────────────────────────────────────
 
     def _populate_table(self, results: list) -> None:
+        import re as _re
+
+        def _natural_key(r):
+            ref = r.component.ref
+            parts = _re.split(r'(\d+)', ref)
+            return [int(p) if p.isdigit() else p.upper() for p in parts]
+
+        sorted_results = sorted(results, key=_natural_key)
+
         self._table.setRowCount(0)
-        for result in results:
+        for result in sorted_results:
             comp = result.component
             row  = self._table.rowCount()
             self._table.insertRow(row)
