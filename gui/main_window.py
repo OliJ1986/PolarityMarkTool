@@ -12,6 +12,7 @@ Supported workflows
 """
 import json
 import os
+import time
 import traceback
 from typing import Optional
 
@@ -609,6 +610,7 @@ class MainWindow(QMainWindow):
             lambda: self._analyze_btn.setEnabled(bool(self._odb_path))
         )
         self._thread.finished.connect(self._thread.deleteLater)
+        self._analysis_start = time.perf_counter()
         self._thread.start()
 
     # ── Result handlers ───────────────────────────────────────────────────
@@ -622,6 +624,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_finished(self, data: object) -> None:
+        elapsed = time.perf_counter() - getattr(self, "_analysis_start", time.perf_counter())
         self._analyze_btn.setEnabled(bool(self._odb_path))
         self._export_btn.setEnabled(True)
 
@@ -631,8 +634,14 @@ class MainWindow(QMainWindow):
         self._results = results
         self._populate_table(results)
         n_marked = sum(1 for r in results if r.has_polarity)
+
+        mins, secs = divmod(elapsed, 60)
+        time_str = f"{int(mins)}:{secs:05.2f}" if mins >= 1 else f"{secs:.2f}s"
+        self._append_log(f"\n⏱  Elapsed time: {time_str}")
+
         self.statusBar().showMessage(
-            f"Done — {len(results)} components, {n_marked} with polarity markers."
+            f"Done — {len(results)} components, {n_marked} with polarity markers  "
+            f"({time_str})"
         )
 
         if odb_rendered and pdf_path:
@@ -687,7 +696,11 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_error(self, msg: str) -> None:
+        elapsed = time.perf_counter() - getattr(self, "_analysis_start", time.perf_counter())
+        mins, secs = divmod(elapsed, 60)
+        time_str = f"{int(mins)}:{secs:05.2f}" if mins >= 1 else f"{secs:.2f}s"
         self._append_log(f"❌ Error:\n{msg}")
+        self._append_log(f"⏱  Running time before error: {time_str}")
         self._analyze_btn.setEnabled(bool(self._odb_path))
         self.statusBar().showMessage("Analysis failed.")
 
