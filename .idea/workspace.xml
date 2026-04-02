@@ -148,7 +148,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775134563763</updated>
     </task>
-    <option name="localTasksCounter" value="10" />
+    <task id="LOCAL-00010" summary="Add DNP (Do-Not-Place) support and enhance correction dialog for bulk editing">
+      <option name="closed" value="true" />
+      <created>1775135104439</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1775135104439</updated>
+    </task>
+    <option name="localTasksCounter" value="11" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
