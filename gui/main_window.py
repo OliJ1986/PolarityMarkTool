@@ -16,14 +16,14 @@ import time
 import traceback
 from typing import Optional
 
-from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QItemSelectionModel
 from PySide6.QtGui import QFont, QColor, QTextCursor, QAction
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QTextEdit, QLabel,
     QSplitter, QCheckBox, QMessageBox, QGroupBox,
     QLineEdit, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QMenu,
+    QHeaderView, QProgressBar, QMenu, QAbstractItemView,
 )
 
 from core.pdf_parser import PDFParser
@@ -39,6 +39,7 @@ from core.matcher import Matcher, MatchResult
 from core.exporter import Exporter
 from utils.config import Config
 from gui.correction_dialog import CorrectionDialog
+from gui.pdf_preview import PDFPreviewWidget
 
 COL_REF = 0; COL_TYPE = 1; COL_PAGE = 2; COL_STATUS = 3; COL_CONF = 4; COL_MARKERS = 5
 _STATUS_COLOR = {
@@ -70,6 +71,7 @@ class AnalysisWorker(QObject):
         config: "Config",
         odb_path: Optional[str] = None,
         corrections: Optional[dict] = None,
+        dnp_refs: Optional[set] = None,
         draw_fab: bool = False,
         draw_silk: bool = False,
         draw_courtyard: bool = True,
@@ -81,6 +83,7 @@ class AnalysisWorker(QObject):
         self.odb_path       = odb_path
         self.config         = config
         self.corrections    = corrections or {}
+        self.dnp_refs       = dnp_refs or set()
         self.draw_fab       = draw_fab
         self.draw_silk      = draw_silk
         self.draw_courtyard = draw_courtyard
@@ -262,6 +265,7 @@ class AnalysisWorker(QObject):
         )
         base    = os.path.splitext(self.file_path)[0]
         out_pdf = base + "_polarity.pdf"
+        comp_positions: dict = {}
         try:
             render_odb_to_pdf(
                 self.file_path, out_pdf,
@@ -273,7 +277,9 @@ class AnalysisWorker(QObject):
                 draw_refdes=self.draw_refdes,
                 mark_pin1=True, save_png=False,
                 overrides=self.corrections,
+                dnp_refs=self.dnp_refs,
                 odb_comps_cache=raw_comps,
+                capture_positions=comp_positions,
                 log_fn=self.log.emit,
             )
             self.log.emit(f"   📄 PDF saved: {out_pdf}")
@@ -284,12 +290,13 @@ class AnalysisWorker(QObject):
         self.progress.emit(100)
         self.log.emit("✅ Done.")
         self.finished.emit({
-            "results":       results,
-            "components":    components,
-            "shapes":        [],
-            "markers":       [],
-            "pdf_path":      out_pdf,
-            "_odb_rendered": True,
+            "results":         results,
+            "components":      components,
+            "shapes":          [],
+            "markers":         [],
+            "pdf_path":        out_pdf,
+            "comp_positions":  comp_positions,
+            "_odb_rendered":   True,
         })
 
     # ── Heuristic pipeline (PDF or DXF source) ────────────────────────────
@@ -383,14 +390,17 @@ class AnalysisWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self._odb_path: str      = ""
-        self._results: list      = []
-        self._thread             = None
-        self._worker             = None
-        self._corrections: dict  = {}
-        self._last_odb_path: str = ""
-        self._last_out_pdf:  str = ""
+        self._odb_path: str       = ""
+        self._results: list       = []
+        self._thread              = None
+        self._worker              = None
+        self._corrections: dict   = {}
+        self._dnp_refs: set       = set()
+        self._comp_positions: dict = {}   # {ref: (pdf_x, pdf_y)} for preview overlay
+        self._last_odb_path: str  = ""
+        self._last_out_pdf:  str  = ""
         self._last_json_path: str = ""
+        self._syncing_selection: bool = False   # prevents selection sync loops
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -423,6 +433,30 @@ class MainWindow(QMainWindow):
         odb_row.addWidget(odb_browse)
         odb_row.addWidget(odb_clear)
         ig.addLayout(odb_row)
+
+        # ── DNP (Do-Not-Place / nem beültetett) ───────────────────────────
+        dnp_row = QHBoxLayout()
+        dnp_lbl = QLabel("DNP:")
+        dnp_lbl.setFixedWidth(36)
+        dnp_lbl.setToolTip("Nem beültetett alkatrészek")
+        self._dnp_edit = QLineEdit()
+        self._dnp_edit.setPlaceholderText(
+            "Nem beültetett alkatrészek vesszővel elválasztva  (pl.: R5, C3, D12, U4) …"
+        )
+        self._dnp_edit.setToolTip(
+            "Ezeket az alkatrészeket narancssárgával jelöli a PDF-en és az előnézeten.\n"
+            "Polaritás jelölő nem kerül rájuk."
+        )
+        self._dnp_edit.textChanged.connect(self._on_dnp_changed)
+        dnp_clear_btn = QPushButton("✕")
+        dnp_clear_btn.setFixedWidth(28)
+        dnp_clear_btn.setToolTip("DNP lista törlése")
+        dnp_clear_btn.clicked.connect(lambda: self._dnp_edit.clear())
+        dnp_row.addWidget(dnp_lbl)
+        dnp_row.addWidget(self._dnp_edit)
+        dnp_row.addWidget(dnp_clear_btn)
+        ig.addLayout(dnp_row)
+
         root.addWidget(input_group)
 
         # ── Options row ───────────────────────────────────────────────────
@@ -514,12 +548,16 @@ class MainWindow(QMainWindow):
         self._table.setHorizontalHeaderLabels(headers)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._table.setAlternatingRowColors(True)
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setFont(QFont("Consolas", 9))
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_table_context_menu)
+        self._table.selectionModel().selectionChanged.connect(
+            self._on_table_selection_changed
+        )
         res_layout.addWidget(self._table)
 
         export_row = QHBoxLayout()
@@ -531,12 +569,44 @@ class MainWindow(QMainWindow):
         res_layout.addLayout(export_row)
 
         splitter.addWidget(res_group)
-        splitter.setSizes([380, 620])
+
+        # ── PDF Preview (third pane) ───────────────────────────────────────
+        prev_group = QGroupBox("PDF előnézet")
+        prev_layout = QVBoxLayout(prev_group)
+        prev_layout.setContentsMargins(4, 4, 4, 4)
+        self._preview = PDFPreviewWidget()
+        self._preview.component_clicked.connect(self._on_preview_component_clicked)
+        self._preview.component_edit_requested.connect(self._on_preview_edit_requested)
+        self._preview.selection_changed.connect(self._on_preview_selection_changed)
+        self._preview.preview_context_menu_requested.connect(
+            self._on_preview_context_menu
+        )
+        prev_layout.addWidget(self._preview)
+        splitter.addWidget(prev_group)
+
+        splitter.setSizes([300, 380, 520])
         root.addWidget(splitter, 1)
 
         self.statusBar().showMessage("Ready.  Load an ODB++ file to begin.")
 
     # ── File browse slots ─────────────────────────────────────────────────
+
+    def _parse_dnp_text(self, text: str) -> set:
+        """Parse comma/semicolon/space-separated Refdes list → set of upper-case refs."""
+        import re as _re
+        parts = _re.split(r"[,;\s]+", text.strip())
+        return {p.strip().upper() for p in parts if p.strip()}
+
+    @Slot(str)
+    def _on_dnp_changed(self, text: str) -> None:
+        """Live: parse DNP field, update preview overlay immediately."""
+        self._dnp_refs = self._parse_dnp_text(text)
+        self._preview.set_dnp_refs(self._dnp_refs)
+        if self._dnp_refs:
+            self.statusBar().showMessage(
+                f"DNP: {len(self._dnp_refs)} alkatrész jelölve  —  "
+                "Re-render to bake into PDF."
+            )
 
     @Slot()
     def _browse_odb(self) -> None:
@@ -572,6 +642,8 @@ class MainWindow(QMainWindow):
         self._table.setRowCount(0)
         self._export_btn.setEnabled(False)
         self._progress.setValue(0)
+        self._comp_positions = {}
+        self._preview.clear()
 
     # ── Analysis ──────────────────────────────────────────────────────────
 
@@ -592,6 +664,7 @@ class MainWindow(QMainWindow):
             self._odb_path, config,
             odb_path=None,
             corrections=self._corrections,
+            dnp_refs=self._dnp_refs,
             draw_fab=self._fab_cb.isChecked(),
             draw_silk=self._silk_cb.isChecked(),
             draw_courtyard=self._court_cb.isChecked(),
@@ -648,6 +721,15 @@ class MainWindow(QMainWindow):
             self._last_odb_path = self._odb_path
             self._last_out_pdf  = pdf_path
             self._rerender_btn.setEnabled(True)
+
+            # Load preview
+            comp_pos = data.get("comp_positions", {})
+            if comp_pos:
+                self._comp_positions = comp_pos
+            if pdf_path and os.path.exists(pdf_path) and self._comp_positions:
+                self._preview.load(pdf_path, self._comp_positions)
+                self._preview.refresh(results, self._corrections)
+                self._preview.set_dnp_refs(self._dnp_refs)
 
         if odb_rendered and pdf_path and os.path.exists(pdf_path):
             reply = QMessageBox.question(
@@ -706,54 +788,215 @@ class MainWindow(QMainWindow):
 
     # ── Manual corrections ────────────────────────────────────────────────
 
+    def _get_table_selected_refs(self) -> list:
+        """Return the clean ref strings for all currently selected table rows."""
+        seen, refs = set(), []
+        for idx in self._table.selectionModel().selectedRows():
+            item = self._table.item(idx.row(), COL_REF)
+            if item:
+                ref = item.text().rstrip(" ✎")
+                if ref not in seen:
+                    seen.add(ref)
+                    refs.append(ref)
+        return refs
+
     @Slot(object)
     def _on_table_context_menu(self, pos) -> None:
-        row = self._table.rowAt(pos.y())
-        if row < 0 or row >= len(self._results):
-            return
-        ref_item = self._table.item(row, COL_REF)
-        if not ref_item:
-            return
-        ref = ref_item.text().rstrip(" ✎")
+        selected_refs = self._get_table_selected_refs()
+        if not selected_refs:
+            # Fall back to the row under the cursor
+            row = self._table.rowAt(pos.y())
+            if row < 0:
+                return
+            item = self._table.item(row, COL_REF)
+            if not item:
+                return
+            selected_refs = [item.text().rstrip(" ✎")]
+
         menu = QMenu(self)
-        act_edit  = QAction(f"✏️  Edit polarity correction for {ref}", self)
-        act_clear = QAction(f"✕  Clear correction for {ref}", self)
-        act_edit.triggered.connect(lambda: self._open_correction_dialog(row, ref))
-        act_clear.triggered.connect(lambda: self._clear_correction(ref))
-        menu.addAction(act_edit)
-        if ref in self._corrections:
-            menu.addAction(act_clear)
+        n = len(selected_refs)
+
+        if n == 1:
+            ref = selected_refs[0]
+            row = self._row_for_ref(ref)
+            act_edit = QAction(f"✏️  Edit polarity correction for {ref}", self)
+            act_edit.triggered.connect(lambda: self._open_correction_dialog(row, ref))
+            menu.addAction(act_edit)
+            if ref in self._corrections:
+                act_clear = QAction(f"✕  Clear correction for {ref}", self)
+                act_clear.triggered.connect(lambda: self._clear_correction(ref))
+                menu.addAction(act_clear)
+        else:
+            act_edit = QAction(f"✏️  Edit correction for {n} components …", self)
+            act_edit.triggered.connect(lambda: self._open_bulk_correction_dialog(selected_refs))
+            menu.addAction(act_edit)
+            has_any_corr = any(r in self._corrections for r in selected_refs)
+            if has_any_corr:
+                act_clear = QAction(f"✕  Clear corrections for all {n}", self)
+                act_clear.triggered.connect(lambda: self._clear_bulk_corrections(selected_refs))
+                menu.addAction(act_clear)
+
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
+    def _row_for_ref(self, ref: str) -> int:
+        """Return the table row index for *ref*, or -1 if not found."""
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, COL_REF)
+            if item and item.text().rstrip(" ✎") == ref:
+                return row
+        return -1
+
     def _open_correction_dialog(self, row: int, ref: str) -> None:
-        result    = self._results[row] if row < len(self._results) else None
+        result    = self._results[row] if 0 <= row < len(self._results) else None
         comp_type = result.component.comp_type if result else "unknown"
         current   = self._corrections.get(ref, {})
         dlg = CorrectionDialog(ref, comp_type, current, parent=self)
         if dlg.exec():
             correction = dlg.get_correction()
+            self._apply_correction_to_refs([ref], correction)
+
+    def _open_bulk_correction_dialog(self, refs: list) -> None:
+        """Open the correction dialog for multiple refs at once."""
+        # Gather comp_types and current corrections for each ref
+        ref_set  = set(refs)
+        comp_types = []
+        for result in self._results:
+            if result.component.ref in ref_set:
+                comp_types.append(result.component.comp_type)
+        if not comp_types:
+            comp_types = ["unknown"] * len(refs)
+
+        current_map = {r: self._corrections.get(r, {}) for r in refs}
+        dlg = CorrectionDialog(refs, comp_types, current_map, parent=self)
+        if dlg.exec():
+            correction = dlg.get_correction()
+            self._apply_correction_to_refs(refs, correction)
+
+    def _apply_correction_to_refs(self, refs: list, correction: dict) -> None:
+        """Apply *correction* to all *refs*, save, and refresh the preview."""
+        for ref in refs:
             if correction:
                 self._corrections[ref] = correction
             elif ref in self._corrections:
                 del self._corrections[ref]
-            self._save_corrections_sidecar()
-            mark = " ✎" if correction else ""
-            ref_item = self._table.item(row, COL_REF)
-            if ref_item:
-                ref_item.setText(ref + mark)
-            if self._last_odb_path:
-                self._rerender_btn.setEnabled(True)
-                self._append_log(
-                    f"✎ Correction saved for {ref}. "
-                    "Click '🔄 Re-render' to update the PDF."
-                )
+
+        self._save_corrections_sidecar()
+
+        # Update table ref-cell text
+        for ref in refs:
+            row = self._row_for_ref(ref)
+            if row >= 0:
+                item = self._table.item(row, COL_REF)
+                if item:
+                    mark = " ✎" if correction else ""
+                    item.setText(ref + mark)
+
+        # Refresh preview — keep the current selection
+        self._preview.refresh(self._results, self._corrections)
+        if self._last_odb_path:
+            self._rerender_btn.setEnabled(True)
+        n = len(refs)
+        label = refs[0] if n == 1 else f"{n} components"
+        action = "saved" if correction else "cleared"
+        self._append_log(
+            f"✎ Correction {action} for {label}. "
+            "Click '🔄 Re-render' to update the PDF."
+        )
 
     def _clear_correction(self, ref: str) -> None:
-        if ref in self._corrections:
-            del self._corrections[ref]
-            self._save_corrections_sidecar()
-            self._append_log(f"✕ Correction cleared for {ref}.")
-            self._populate_table(self._results)
+        self._apply_correction_to_refs([ref], {})
+
+    def _clear_bulk_corrections(self, refs: list) -> None:
+        self._apply_correction_to_refs(refs, {})
+
+    # ── Selection sync (preview ↔ table) ─────────────────────────────────
+
+    @Slot(str)
+    def _on_preview_component_clicked(self, ref: str) -> None:
+        """Scroll the table to the most-recently clicked component."""
+        clean = ref.rstrip(" ✎")
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, COL_REF)
+            if item and item.text().rstrip(" ✎") == clean:
+                self._table.scrollToItem(item)
+                break
+
+    @Slot(list)
+    def _on_preview_selection_changed(self, refs: list) -> None:
+        """Preview selection changed → update table selection to match."""
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            sm = self._table.selectionModel()
+            self._table.clearSelection()
+            clean_set = {r.rstrip(" ✎") for r in refs}
+            for row in range(self._table.rowCount()):
+                item = self._table.item(row, COL_REF)
+                if item and item.text().rstrip(" ✎") in clean_set:
+                    sm.select(
+                        self._table.model().index(row, 0),
+                        QItemSelectionModel.Select | QItemSelectionModel.Rows,
+                    )
+        finally:
+            self._syncing_selection = False
+
+    @Slot()
+    def _on_table_selection_changed(self) -> None:
+        """Table selection changed → update preview highlight to match."""
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            selected_refs = self._get_table_selected_refs()
+            self._preview.select_multi(selected_refs)
+        finally:
+            self._syncing_selection = False
+
+    @Slot(str)
+    def _on_preview_edit_requested(self, ref: str) -> None:
+        """Duplakatt a preview-on → javítás párbeszéd a kijelölt komponenseknek."""
+        selected = self._preview.get_selected_refs()
+        if len(selected) > 1 and ref in selected:
+            # Ha több van kijelölve és a duplakattintott is köztük van → bulk
+            self._open_bulk_correction_dialog(selected)
+        else:
+            # Egyedi szerkesztés
+            clean = ref.rstrip(" ✎")
+            row   = self._row_for_ref(clean)
+            self._open_correction_dialog(row, clean)
+
+    @Slot(object)
+    def _on_preview_context_menu(self, global_pos) -> None:
+        """Jobb-katt a preview-on → context menu a kijelölt komponensekre."""
+        selected_refs = self._preview.get_selected_refs()
+        if not selected_refs:
+            return
+        menu = QMenu(self)
+        n    = len(selected_refs)
+        if n == 1:
+            ref = selected_refs[0]
+            row = self._row_for_ref(ref)
+            act_edit = QAction(f"✏️  Edit correction for {ref}", self)
+            act_edit.triggered.connect(lambda: self._open_correction_dialog(row, ref))
+            menu.addAction(act_edit)
+            if ref in self._corrections:
+                act_clear = QAction(f"✕  Clear correction for {ref}", self)
+                act_clear.triggered.connect(lambda: self._clear_correction(ref))
+                menu.addAction(act_clear)
+        else:
+            act_edit = QAction(f"✏️  Edit correction for {n} components …", self)
+            act_edit.triggered.connect(
+                lambda: self._open_bulk_correction_dialog(selected_refs)
+            )
+            menu.addAction(act_edit)
+            if any(r in self._corrections for r in selected_refs):
+                act_clear = QAction(f"✕  Clear corrections for all {n}", self)
+                act_clear.triggered.connect(
+                    lambda: self._clear_bulk_corrections(selected_refs)
+                )
+                menu.addAction(act_clear)
+        menu.exec(global_pos)
 
     @Slot()
     def _rerender_odb(self) -> None:
@@ -765,6 +1008,12 @@ class MainWindow(QMainWindow):
             return
         self._rerender_btn.setEnabled(False)
         self._append_log("\n🔄 Re-rendering with corrections …")
+
+        # Release the PDF file handle BEFORE overwriting the file on disk.
+        # Without this, Windows raises "Permission denied" because PyMuPDF
+        # keeps the file open via fitz.open().
+        self._preview.release()
+
         try:
             render_odb_to_pdf(
                 odb_path, out_pdf,
@@ -776,9 +1025,15 @@ class MainWindow(QMainWindow):
                 draw_refdes=self._refdes_cb.isChecked(),
                 mark_pin1=True, save_png=False,
                 overrides=self._corrections,
+                dnp_refs=self._dnp_refs,
                 log_fn=self._append_log,
             )
             self._append_log(f"   PDF updated: {out_pdf}")
+            # Reload preview with fresh render
+            if self._comp_positions:
+                self._preview.load(out_pdf, self._comp_positions)
+                self._preview.refresh(self._results, self._corrections)
+                self._preview.set_dnp_refs(self._dnp_refs)
             reply = QMessageBox.question(
                 self, "Open updated PDF?",
                 f"Re-rendered:\n{out_pdf}\n\nOpen now?",
@@ -792,6 +1047,10 @@ class MainWindow(QMainWindow):
                     subprocess.Popen(["cmd", "/c", "start", "", out_pdf])
         except Exception as exc:
             self._append_log(f"❌ Re-render failed: {exc}")
+            # Re-open the old PDF if render failed (so preview stays functional)
+            if self._comp_positions and os.path.exists(out_pdf):
+                self._preview.load(out_pdf, self._comp_positions)
+                self._preview.refresh(self._results, self._corrections)
         finally:
             self._rerender_btn.setEnabled(True)
 
@@ -862,7 +1121,12 @@ class MainWindow(QMainWindow):
                 "courtyard": self._court_cb.isChecked(),
                 "notes":     self._notes_cb.isChecked() if hasattr(self, "_notes_cb") else False,
             },
-            "corrections": self._corrections,
+            "corrections":    self._corrections,
+            # comp_positions enables auto-restoring the PDF preview next session
+            "comp_positions": {
+                ref: list(xy) for ref, xy in self._comp_positions.items()
+            },
+            "dnp_refs": sorted(self._dnp_refs),
         }
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -891,6 +1155,18 @@ class MainWindow(QMainWindow):
             if self._last_out_pdf:
                 self._last_odb_path = odb_path
                 self._rerender_btn.setEnabled(True)
+            # Restore component positions so the preview can be reloaded
+            raw_pos = data.get("comp_positions", {})
+            if isinstance(raw_pos, dict) and raw_pos:
+                self._comp_positions = {k: tuple(v) for k, v in raw_pos.items()}
+            # Restore DNP list
+            saved_dnp = data.get("dnp_refs", [])
+            if isinstance(saved_dnp, list) and saved_dnp:
+                self._dnp_refs = set(saved_dnp)
+                # Update the text field (triggers _on_dnp_changed too)
+                self._dnp_edit.blockSignals(True)
+                self._dnp_edit.setText(", ".join(sorted(self._dnp_refs)))
+                self._dnp_edit.blockSignals(False)
             self._append_log(f"↩ Session loaded: {os.path.basename(path)}")
         except Exception as exc:
             self._append_log(f"⚠️  Session load failed: {exc}")
@@ -924,10 +1200,23 @@ class MainWindow(QMainWindow):
                 f"↩ Results restored: {len(results)} components "
                 f"({n_marked} marked) from {os.path.basename(path)}"
             )
-            self.statusBar().showMessage(
-                f"Restored {len(results)} components from JSON — "
-                f"click '🔄 Re-render' to rebuild the PDF."
-            )
+
+            # Auto-load PDF preview if we have all the pieces from the session
+            pdf_path = self._last_out_pdf
+            if pdf_path and os.path.exists(pdf_path) and self._comp_positions:
+                self._preview.load(pdf_path, self._comp_positions)
+                self._preview.refresh(results, self._corrections)
+                self._preview.set_dnp_refs(self._dnp_refs)
+                self._append_log("   🖼  PDF előnézet betöltve.")
+                self.statusBar().showMessage(
+                    f"Restored {len(results)} components from JSON  "
+                    f"({n_marked} marked)  —  PDF preview loaded."
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"Restored {len(results)} components from JSON — "
+                    f"click '🔄 Re-render' to rebuild the PDF."
+                )
             return
 
     # ── Export ────────────────────────────────────────────────────────────
@@ -962,25 +1251,31 @@ class MainWindow(QMainWindow):
 
         sorted_results = sorted(results, key=_natural_key)
 
-        self._table.setRowCount(0)
-        for result in sorted_results:
-            comp = result.component
-            row  = self._table.rowCount()
-            self._table.insertRow(row)
-            marker_types = ", ".join(sorted(set(m.marker_type for m in result.markers)))
-            conf_str = f"{result.overall_confidence:.0%}" if result.has_polarity else "—"
-            ref_text = comp.ref + (" ✎" if comp.ref in self._corrections else "")
-            values = [
-                ref_text, comp.comp_type, str(comp.page + 1),
-                result.polarity_status, conf_str, marker_types or "—",
-            ]
-            for col, val in enumerate(values):
-                item = QTableWidgetItem(val)
-                item.setTextAlignment(Qt.AlignCenter)
-                bg = _STATUS_COLOR.get(result.polarity_status)
-                if bg:
-                    item.setBackground(bg)
-                self._table.setItem(row, col, item)
+        # Block selection-sync while rebuilding the table to avoid preview flicker
+        self._syncing_selection = True
+        try:
+            self._table.setRowCount(0)
+            for result in sorted_results:
+                comp = result.component
+                row  = self._table.rowCount()
+                self._table.insertRow(row)
+                marker_types = ", ".join(sorted(set(m.marker_type for m in result.markers)))
+                conf_str = f"{result.overall_confidence:.0%}" if result.has_polarity else "—"
+                ref_text = comp.ref + (" ✎" if comp.ref in self._corrections else "")
+                values = [
+                    ref_text, comp.comp_type, str(comp.page + 1),
+                    result.polarity_status, conf_str, marker_types or "—",
+                ]
+                for col, val in enumerate(values):
+                    item = QTableWidgetItem(val)
+                    item.setTextAlignment(Qt.AlignCenter)
+                    bg = _STATUS_COLOR.get(result.polarity_status)
+                    if bg:
+                        item.setBackground(bg)
+                    self._table.setItem(row, col, item)
+        finally:
+            self._syncing_selection = False
+
         self._apply_results_filter()
 
     @Slot(str)

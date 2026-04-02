@@ -329,12 +329,18 @@ def render_odb_to_pdf(
     save_png: bool = True,
     margin_mm: float = 2.0,
     overrides: Optional[Dict[str, dict]] = None,
+    dnp_refs: Optional[set] = None,
     odb_comps_cache: Optional[list] = None,
+    capture_positions: Optional[dict] = None,
     log_fn=None,
 ) -> str:
     """Render ODB++ → PDF with OCG layers and adaptive polarity markers.
 
     ``draw_refdes`` — include Reference Designator labels as a toggleable layer.
+
+    ``capture_positions`` — if a dict is passed, it is filled with
+    ``{ref: (pdf_x, pdf_y)}`` for every component (PDF pt coordinates).
+    Useful for the live preview overlay without re-parsing the archive.
 
     ``overrides`` dict — per-component manual corrections::
 
@@ -396,6 +402,7 @@ def render_odb_to_pdf(
     ocg_notes   = doc.add_ocg("Notes / User Drawing",  on=draw_notes)
     ocg_labels  = doc.add_ocg("Reference labels",      on=draw_refdes)
     ocg_markers = doc.add_ocg("Polarity markers",      on=True)
+    ocg_dnp     = doc.add_ocg("DNP (Not Placed)",      on=True)
 
     # Board outline — batch into a single shape
     _log(f"   [render] Drawing board outline ({len(board_outline)} pts) …")
@@ -502,6 +509,11 @@ def render_odb_to_pdf(
             _log(f"   [render]   Parse failed: {exc}")
             odb_comps = []
 
+    # Capture component PDF coordinates for the live preview overlay
+    if capture_positions is not None:
+        for oc in odb_comps:
+            capture_positions[oc.ref] = (tx(oc.x), ty(oc.y))
+
     overrides = overrides or {}
     font_size = max(2.8, min(4.0, bw/25))
 
@@ -518,8 +530,12 @@ def render_odb_to_pdf(
 
     if mark_pin1:
         base_r = max(1.8, min(4.0, bw/22))
+        # Normalise DNP set for fast lookup (upper-case, stripped)
+        dnp_set = {r.strip().upper() for r in dnp_refs} if dnp_refs else set()
+
         n_polar = sum(1 for oc in odb_comps
-                      if overrides.get(oc.ref,{}).get("polar") is not False
+                      if oc.ref.upper() not in dnp_set
+                      and overrides.get(oc.ref,{}).get("polar") is not False
                       and (oc.is_polar if overrides.get(oc.ref,{}).get("polar") is None
                            else True))
         _log(f"   [render] Drawing polarity markers (~{n_polar} polar components) …")
@@ -550,6 +566,8 @@ def render_odb_to_pdf(
             ovr = overrides.get(oc.ref, {})
             force_polar = ovr.get("polar")
             if force_polar is False: continue
+            # DNP components get no polarity marker
+            if oc.ref.upper() in dnp_set: continue
             is_polar = oc.is_polar if force_polar is None else force_polar
             if not is_polar: continue
 
@@ -589,6 +607,54 @@ def render_odb_to_pdf(
                                   _HIGHLIGHT_GREEN,
                                   len(oc.pins)==2, ocg_markers, body_shape)
         _log("   [render] Polarity markers done.")
+
+    # ── DNP markers ───────────────────────────────────────────────────────
+    # Orange semi-transparent rectangle + X-cross + "DNP" label for every
+    # component whose ref is in the dnp_refs set.
+    if dnp_refs:
+        if not mark_pin1:
+            # dnp_set not yet built when mark_pin1 is False
+            dnp_set = {r.strip().upper() for r in dnp_refs}
+        n_dnp = 0
+        for oc in odb_comps:
+            if oc.ref.upper() not in dnp_set:
+                continue
+            n_dnp += 1
+            cx_, cy_ = tx(oc.x), ty(oc.y)
+
+            # Bounding box: exact pin positions, zero padding.
+            # For linear passives the pins are collinear → one dimension is 0;
+            # expand only that dimension to the polarity-dot radius so it's visible.
+            if oc.pins:
+                xs = [tx(p.x) for p in oc.pins]
+                ys = [ty(p.y) for p in oc.pins]
+                x0, y0 = min(xs), min(ys)
+                x1, y1 = max(xs), max(ys)
+            else:
+                # No pin data: use pin-span or a default square
+                half = max(3.0, oc.pin_span_mm * coord_to_mm * MM_TO_PT * 0.5) \
+                       if oc.pin_span_mm > 0 else max(3.0, font_size * 1.5)
+                x0, y0, x1, y1 = cx_ - half, cy_ - half, cx_ + half, cy_ + half
+
+            # Ensure each dimension is at least 1× base_r so it stays visible
+            min_dim = base_r
+            if (x1 - x0) < min_dim:
+                mid = (x0 + x1) / 2
+                x0, x1 = mid - min_dim / 2, mid + min_dim / 2
+            if (y1 - y0) < min_dim:
+                mid = (y0 + y1) / 2
+                y0, y1 = mid - min_dim / 2, mid + min_dim / 2
+
+            # Semi-transparent orange fill only — no border, no text, no cross
+            fill_shape = page.new_shape()
+            fill_shape.draw_rect(fitz.Rect(x0, y0, x1, y1))
+            fill_shape.finish(
+                fill=_HIGHLIGHT_ORANGE,
+                fill_opacity=0.35, width=0, oc=ocg_dnp,
+            )
+            fill_shape.commit()
+
+        _log(f"   [render] DNP markers done ({n_dnp} component(s)).")
 
     _log("   [render] Saving PDF …")
     doc.save(output_pdf, deflate=True)

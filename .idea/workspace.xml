@@ -5,10 +5,10 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Add initial project files and implement sorting for results table">
-      <change afterPath="$PROJECT_DIR$/PolarityMark.spec" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/build.bat" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/gui/pdf_preview.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/pad_asymmetry_detector.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/pad_asymmetry_detector.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/odb_renderer.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_renderer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui/correction_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/correction_dialog.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/main_window.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -42,24 +42,25 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;Python._test_color_filter.executor&quot;: &quot;Run&quot;,
-    &quot;Python.app.executor&quot;: &quot;Run&quot;,
-    &quot;Python.dxf_parser.executor&quot;: &quot;Run&quot;,
-    &quot;Python.exporter.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main_window.executor&quot;: &quot;Run&quot;,
-    &quot;Python.odb_parser.executor&quot;: &quot;Run&quot;,
-    &quot;Python.odb_registration.executor&quot;: &quot;Run&quot;,
-    &quot;Python.odb_renderer.executor&quot;: &quot;Run&quot;,
-    &quot;Python.pad_asymmetry_detector.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/OJanka/PycharmProjects/PolarityMarkTool/PDF&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;com.github.copilot.settings.chat.ChatConfigurable&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "Python._test_color_filter.executor": "Run",
+    "Python.app.executor": "Run",
+    "Python.correction_dialog.executor": "Run",
+    "Python.dxf_parser.executor": "Run",
+    "Python.exporter.executor": "Run",
+    "Python.main_window.executor": "Run",
+    "Python.odb_parser.executor": "Run",
+    "Python.odb_registration.executor": "Run",
+    "Python.odb_renderer.executor": "Run",
+    "Python.pad_asymmetry_detector.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "master",
+    "last_opened_file_path": "C:/Users/OJanka/PycharmProjects/PolarityMarkTool/PDF",
+    "settings.editor.selected.configurable": "com.github.copilot.settings.chat.ChatConfigurable"
   }
-}</component>
+}]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="C:\Users\OJanka\PycharmProjects\PolarityMarkTool\PDF" />
@@ -137,7 +138,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775120208782</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="Add initial project files and implement sorting for results table">
+      <option name="closed" value="true" />
+      <created>1775124608186</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1775124608186</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
