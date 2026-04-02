@@ -11,8 +11,7 @@ Polarity markers:
   - 2-pin SMD  →  D-shaped (semicircle) at polarity pin, flat side toward
                   component centre → marker stays inside the component body.
   - Multi-pin  →  small filled circle at polarity pin.
-  - Diodes/LEDs   → orange (cathode; resolved from ODB++ net names)
-  - Other polar   → green (pin 1)
+  - All polar types  → bright green highlighter stroke (unified colour)
 
 Supports UNITS=MM and UNITS=INCH.
 """
@@ -197,11 +196,69 @@ def _parse_profile(content: str) -> List[Tuple[float,float]]:
 # Polarity marker
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+# --- Helper functions for marker boundary calculation ---
+import sys
+from typing import Optional
+
+def _distance_to_rect_edge(px, py, ux, uy, rect_bbox):
+    # rect_bbox: BoundingBox (x0, y0, x1, y1)
+    left, right = rect_bbox.x0, rect_bbox.x1
+    top, bottom = rect_bbox.y0, rect_bbox.y1
+    t_values = []
+    if abs(ux) > 1e-8:
+        t1 = (left - px) / ux
+        t2 = (right - px) / ux
+        t_values.extend([t1, t2])
+    if abs(uy) > 1e-8:
+        t3 = (top - py) / uy
+        t4 = (bottom - py) / uy
+        t_values.extend([t3, t4])
+    t_values = [t for t in t_values if t > 0]
+    min_t = min(t_values) if t_values else 0.0
+    return min_t
+
+def _distance_to_circle_edge(px, py, ux, uy, cx, cy, r):
+    # Ray from (px, py) in (ux, uy) direction, circle at (cx, cy) radius r
+    dx = px - cx
+    dy = py - cy
+    # Solve (px + t*ux - cx)^2 + (py + t*uy - cy)^2 = r^2
+    a = ux*ux + uy*uy
+    b = 2 * (dx*ux + dy*uy)
+    c = dx*dx + dy*dy - r*r
+    disc = b*b - 4*a*c
+    if disc < 0:
+        return 0.0
+    sqrt_disc = math.sqrt(disc)
+    t1 = (-b + sqrt_disc) / (2*a)
+    t2 = (-b - sqrt_disc) / (2*a)
+    t_candidates = [t for t in (t1, t2) if t > 0]
+    return min(t_candidates) if t_candidates else 0.0
+
+def _distance_to_polygon_edge(px, py, ux, uy, points):
+    # points: list of (x, y) tuples or Point objects
+    min_dist = sys.float_info.max
+    n = len(points)
+    for i in range(n):
+        x1, y1 = points[i][0], points[i][1]
+        x2, y2 = points[(i+1)%n][0], points[(i+1)%n][1]
+        denom = (x2 - x1) * uy - (y2 - y1) * ux
+        if abs(denom) < 1e-8:
+            continue
+        t = ((x1 - px) * (y2 - y1) - (y1 - py) * (x2 - x1)) / denom
+        u = ((x1 - px) * uy - (y1 - py) * ux) / denom
+        if t > 0 and 0 <= u <= 1:
+            min_dist = min(min_dist, t)
+    return min_dist if min_dist != sys.float_info.max else 0.0
+
 def _draw_polarity_marker(page, px:float, py:float, cx:float, cy:float,
-                           r:float, color:tuple, is_two_pin:bool, oc:int) -> None:
+                           r:float, color:tuple, is_two_pin:bool, oc:int,
+                           body_shape:Optional[dict]=None) -> None:
     """Draw a small highlighter-like stroke inside the component body.
     The stroke is oriented perpendicular to the pin→center direction and
     shifted slightly inward so it looks like a marker dab on the component.
+    If body_shape is provided, ensures the marker stays inside the body.
+    body_shape: dict with keys: 'type' ('rect'|'circle'|'polygon'), and geometry.
     """
     _ = is_two_pin  # currently same visual style for 2-pin and multi-pin
     dx, dy = cx - px, cy - py
@@ -211,10 +268,31 @@ def _draw_polarity_marker(page, px:float, py:float, cx:float, cy:float,
     else:
         ux, uy = dx / dist, dy / dist
 
+    # --- Compute max distance so marker stays inside body ---
+    margin = 0.3  # pt, so marker doesn't touch the edge
+    marker_dist = max(0.9, r * 0.70)
+    if body_shape is not None:
+        try:
+            if body_shape['type'] == 'rect':
+                rect_bbox = body_shape['bbox']  # BoundingBox
+                max_dist = _distance_to_rect_edge(px, py, ux, uy, rect_bbox)
+                marker_dist = min(marker_dist, max_dist - margin)
+            elif body_shape['type'] == 'circle':
+                cx0, cy0, rad = body_shape['cx'], body_shape['cy'], body_shape['r']
+                max_dist = _distance_to_circle_edge(px, py, ux, uy, cx0, cy0, rad)
+                marker_dist = min(marker_dist, max_dist - margin)
+            elif body_shape['type'] == 'polygon':
+                points = body_shape['points']
+                max_dist = _distance_to_polygon_edge(px, py, ux, uy, points)
+                marker_dist = min(marker_dist, max_dist - margin)
+        except Exception:
+            pass
+    marker_dist = max(0.5, marker_dist)  # always at least 0.5pt
+
     # Tangent direction gives an oriented highlight dash.
     tx, ty = -uy, ux
-    mx = px + ux * max(0.9, r * 0.70)
-    my = py + uy * max(0.9, r * 0.70)
+    mx = px + ux * marker_dist
+    my = py + uy * marker_dist
     half_len = max(1.2, r * 0.85)
 
     p1 = fitz.Point(mx - tx * half_len, my - ty * half_len)
@@ -246,6 +324,7 @@ def render_odb_to_pdf(
     draw_cu: bool = False,
     draw_silk: bool = True,
     draw_notes: bool = False,
+    draw_refdes: bool = True,
     mark_pin1: bool = True,
     save_png: bool = True,
     margin_mm: float = 2.0,
@@ -254,6 +333,8 @@ def render_odb_to_pdf(
     log_fn=None,
 ) -> str:
     """Render ODB++ → PDF with OCG layers and adaptive polarity markers.
+
+    ``draw_refdes`` — include Reference Designator labels as a toggleable layer.
 
     ``overrides`` dict — per-component manual corrections::
 
@@ -307,14 +388,14 @@ def render_odb_to_pdf(
     doc  = fitz.open()
     page = doc.new_page(width=pw, height=ph)
 
-    ocg_outline = doc.add_ocg("Board outline",   on=True)
-    ocg_copper  = doc.add_ocg("Copper (top)",    on=draw_cu)
-    ocg_fab     = doc.add_ocg("Fab / Assembly",  on=True)
-    ocg_silk    = doc.add_ocg("Silkscreen",      on=True)
-    ocg_court   = doc.add_ocg("Courtyard",       on=draw_courtyard)
-    ocg_notes   = doc.add_ocg("Notes / User Drawing", on=draw_notes)
-    ocg_labels  = doc.add_ocg("Reference labels",on=True)
-    ocg_markers = doc.add_ocg("Polarity markers",on=True)
+    ocg_outline = doc.add_ocg("Board outline",        on=True)
+    ocg_copper  = doc.add_ocg("Copper (top)",          on=draw_cu)
+    ocg_fab     = doc.add_ocg("Fab / Assembly",        on=True)
+    ocg_silk    = doc.add_ocg("Silkscreen",            on=True)
+    ocg_court   = doc.add_ocg("Courtyard",             on=draw_courtyard)
+    ocg_notes   = doc.add_ocg("Notes / User Drawing",  on=draw_notes)
+    ocg_labels  = doc.add_ocg("Reference labels",      on=draw_refdes)
+    ocg_markers = doc.add_ocg("Polarity markers",      on=True)
 
     # Board outline — batch into a single shape
     _log(f"   [render] Drawing board outline ({len(board_outline)} pts) …")
@@ -442,6 +523,29 @@ def render_odb_to_pdf(
                       and (oc.is_polar if overrides.get(oc.ref,{}).get("polar") is None
                            else True))
         _log(f"   [render] Drawing polarity markers (~{n_polar} polar components) …")
+
+        # --- Assign shapes to components for body detection ---
+        try:
+            from core.pdf_parser import PDFParser
+            from core.component_shape_assign import assign_shapes_to_components
+            pdf_path = odb_path.replace(".zip", ".pdf").replace(".tgz", ".pdf")
+            if not os.path.isfile(pdf_path):
+                pdf_path = output_pdf  # fallback to output if exists
+            parser = PDFParser(pdf_path)
+            pages = parser.parse()
+            parser.close()
+            all_shapes = [s for p in pages for s in p.shapes]
+            # Dummy Component objects for assign_shapes_to_components
+            from core.component_detector import Component
+            from utils.geometry import BoundingBox, Point
+            dummy_comps = []
+            for oc in odb_comps:
+                dummy_comps.append(Component(ref=oc.ref, comp_type=oc.comp_type, bbox=BoundingBox(oc.x, oc.y, oc.x+1, oc.y+1), center=Point(oc.x, oc.y), page=0))
+            comp_shape_map = assign_shapes_to_components(dummy_comps, all_shapes, margin=2.0)
+            comp_shape_dict = {c.ref: shapes for c, shapes in comp_shape_map.items()}
+        except Exception:
+            comp_shape_dict = {}
+
         for oc in odb_comps:
             ovr = overrides.get(oc.ref, {})
             force_polar = ovr.get("polar")
@@ -462,9 +566,28 @@ def render_odb_to_pdf(
             cx_,cy_ = tx(oc.x), ty(oc.y)
             span_mm  = oc.pin_span_mm * coord_to_mm
             marker_r = max(1.0, min(base_r*1.5, span_mm*0.30*MM_TO_PT)) if span_mm>0 else base_r
+
+            # --- Find body shape for this component ---
+            body_shape = None
+            shapes = comp_shape_dict.get(oc.ref, [])
+            for s in shapes:
+                if s.shape_type in ("rect", "filled_rect"):
+                    body_shape = {'type': 'rect', 'bbox': s.bbox}
+                    break
+                elif s.shape_type in ("circle", "filled_circle"):
+                    cx0 = (s.bbox.x0 + s.bbox.x1) / 2.0
+                    cy0 = (s.bbox.y0 + s.bbox.y1) / 2.0
+                    rad = min(s.bbox.width, s.bbox.height) / 2.0
+                    body_shape = {'type': 'circle', 'cx': cx0, 'cy': cy0, 'r': rad}
+                    break
+                elif s.shape_type in ("polyline", "path") and len(s.points) >= 3:
+                    pts = [(p.x, p.y) for p in s.points]
+                    body_shape = {'type': 'polygon', 'points': pts}
+                    break
+
             _draw_polarity_marker(page, px_,py_, cx_,cy_, marker_r,
-                                  _HIGHLIGHT_ORANGE if oc.comp_type in ("diode","led") else _HIGHLIGHT_GREEN,
-                                  len(oc.pins)==2, ocg_markers)
+                                  _HIGHLIGHT_GREEN,
+                                  len(oc.pins)==2, ocg_markers, body_shape)
         _log("   [render] Polarity markers done.")
 
     _log("   [render] Saving PDF …")

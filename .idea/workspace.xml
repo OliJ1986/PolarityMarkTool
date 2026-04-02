@@ -4,9 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Enhance component detection and add polarity correction dialog&#10;&#10;- Updated component detection patterns to include additional types (regulators, converters, etc.).&#10;- Introduced a new dialog for manually correcting component polarity markings.&#10;- Improved handling of ODB++ netlist parsing to resolve cathode pins for diodes and LEDs.&#10;- Added functionality for saving and loading manual corrections from a sidecar JSON file.">
+    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Add Notes/User Drawing layer support, session auto-save, and result filtering&#10;&#10;- Added option to include Notes/User Drawing layer in rendering and UI&#10;- Implemented auto-save and restore of session state and results JSON&#10;- Enhanced polarity marker visuals for improved clarity&#10;- Added search/filter box for results table&#10;- Updated layer detection and rendering logic to support new features">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/exporter.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/exporter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/odb_parser.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_parser.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/core/odb_renderer.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_renderer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/pad_asymmetry_detector.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/pad_asymmetry_detector.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/main_window.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -20,12 +23,12 @@
     </persistenceIdMap>
   </component>
   <component name="CopilotUserSelectedChatMode">
-    <option name="chatModeId" value="Ask" />
+    <option name="chatModeId" value="Agent" />
   </component>
   <component name="CopilotUserSelectedModel">
     <selectedModels>
-      <entry key="chat-panel" value="GPT-4.1" />
-      <entry key="agent-panel" value="GPT-4.1" />
+      <entry key="chat-panel" value="Claude Sonnet 4.6" />
+      <entry key="agent-panel" value="Claude Sonnet 4.6" />
     </selectedModels>
   </component>
   <component name="Git.Settings">
@@ -40,23 +43,24 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "Python._test_color_filter.executor": "Run",
-    "Python.app.executor": "Run",
-    "Python.dxf_parser.executor": "Run",
-    "Python.main_window.executor": "Run",
-    "Python.odb_parser.executor": "Run",
-    "Python.odb_registration.executor": "Run",
-    "Python.odb_renderer.executor": "Run",
-    "Python.pad_asymmetry_detector.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "git-widget-placeholder": "master",
-    "last_opened_file_path": "C:/Users/OJanka/PycharmProjects/PolarityMarkTool/PDF",
-    "settings.editor.selected.configurable": "com.github.copilot.settings.chat.ChatConfigurable"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;Python._test_color_filter.executor&quot;: &quot;Run&quot;,
+    &quot;Python.app.executor&quot;: &quot;Run&quot;,
+    &quot;Python.dxf_parser.executor&quot;: &quot;Run&quot;,
+    &quot;Python.exporter.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main_window.executor&quot;: &quot;Run&quot;,
+    &quot;Python.odb_parser.executor&quot;: &quot;Run&quot;,
+    &quot;Python.odb_registration.executor&quot;: &quot;Run&quot;,
+    &quot;Python.odb_renderer.executor&quot;: &quot;Run&quot;,
+    &quot;Python.pad_asymmetry_detector.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/OJanka/PycharmProjects/PolarityMarkTool/PDF&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.github.copilot.settings.chat.ChatConfigurable&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="C:\Users\OJanka\PycharmProjects\PolarityMarkTool\PDF" />
@@ -110,13 +114,22 @@
       <option name="project" value="LOCAL" />
       <updated>1774523957496</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="Add Notes/User Drawing layer support, session auto-save, and result filtering&#10;&#10;- Added option to include Notes/User Drawing layer in rendering and UI&#10;- Implemented auto-save and restore of session state and results JSON&#10;- Enhanced polarity marker visuals for improved clarity&#10;- Added search/filter box for results table&#10;- Updated layer detection and rendering logic to support new features">
+      <option name="closed" value="true" />
+      <created>1774534435312</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1774534435312</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="First Initial Commit" />
     <MESSAGE value="Enhance component detection and add polarity correction dialog&#10;&#10;- Updated component detection patterns to include additional types (regulators, converters, etc.).&#10;- Introduced a new dialog for manually correcting component polarity markings.&#10;- Improved handling of ODB++ netlist parsing to resolve cathode pins for diodes and LEDs.&#10;- Added functionality for saving and loading manual corrections from a sidecar JSON file." />
-    <option name="LAST_COMMIT_MESSAGE" value="Enhance component detection and add polarity correction dialog&#10;&#10;- Updated component detection patterns to include additional types (regulators, converters, etc.).&#10;- Introduced a new dialog for manually correcting component polarity markings.&#10;- Improved handling of ODB++ netlist parsing to resolve cathode pins for diodes and LEDs.&#10;- Added functionality for saving and loading manual corrections from a sidecar JSON file." />
+    <MESSAGE value="Add Notes/User Drawing layer support, session auto-save, and result filtering&#10;&#10;- Added option to include Notes/User Drawing layer in rendering and UI&#10;- Implemented auto-save and restore of session state and results JSON&#10;- Enhanced polarity marker visuals for improved clarity&#10;- Added search/filter box for results table&#10;- Updated layer detection and rendering logic to support new features" />
+    <option name="LAST_COMMIT_MESSAGE" value="Add Notes/User Drawing layer support, session auto-save, and result filtering&#10;&#10;- Added option to include Notes/User Drawing layer in rendering and UI&#10;- Implemented auto-save and restore of session state and results JSON&#10;- Enhanced polarity marker visuals for improved clarity&#10;- Added search/filter box for results table&#10;- Updated layer detection and rendering logic to support new features" />
   </component>
   <component name="github-copilot-workspace">
     <instructionFileLocations>

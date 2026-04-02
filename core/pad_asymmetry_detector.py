@@ -16,12 +16,10 @@ AND the already-detected components to work.
 """
 from __future__ import annotations
 
+import math
+from collections import Counter
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
-
-if TYPE_CHECKING:
-    from core.matcher import MatchResult
-
+from typing import Dict, List, Optional, Set, Tuple
 
 from utils.geometry import BoundingBox, Point
 from utils.config import Config, DEFAULT_CONFIG
@@ -117,20 +115,17 @@ def _build_footprint_areas(
         color = s.stroke_color or s.fill_color
         if not _is_courtyard_color(color):
             continue
-        # Skip truly degenerate zero-size shapes only (not individual line segments:
-        # KiCad exports courtyard as many tiny sub-pixel path segments, so we must
-        # accept even very small individual bboxes and rely on the merge step below)
-        if s.bbox.width < 0.001 and s.bbox.height < 0.001:
+        # Only consider shapes large enough to be a courtyard (~3 pt min)
+        if s.bbox.width < 2.0 or s.bbox.height < 2.0:
             continue
         courtyard_bboxes.setdefault(s.page, []).append(s.bbox)
 
     # Merge overlapping courtyard boxes into component footprints
-    # (KiCad draws courtyard as many tiny segments → union them all)
+    # (KiCad draws courtyard as 4 lines → we union nearby boxes)
     merged_courtyards: Dict[int, List[BoundingBox]] = {}
     for page, boxes in courtyard_bboxes.items():
-        merged = _merge_nearby_bboxes(boxes, gap=1.5)
-        # Keep only bboxes large enough to be a real component footprint
-        merged_courtyards[page] = [b for b in merged if b.width >= 3.0 and b.height >= 3.0]
+        merged = _merge_nearby_bboxes(boxes, gap=2.0)
+        merged_courtyards[page] = merged
 
     result: Dict[str, BoundingBox] = {}
     for comp in components:
@@ -202,229 +197,126 @@ def _bboxes_close(a: BoundingBox, b: BoundingBox, gap: float) -> bool:
 # Detector
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _cluster_pads_into_footprints(
-    all_pads: List[_Pad],
-    cluster_radius: float = 6.0,
-) -> List[List[_Pad]]:
-    """
-    Group pads into footprint clusters by spatial proximity.
-
-    Two pads are in the same footprint if they are within *cluster_radius* pt
-    of at least one other pad in the cluster (connected-components style).
-    This replaces the old search-radius approach that accidentally mixed pads
-    from neighbouring components.
-    """
-    clusters: List[List[_Pad]] = []
-    used: Set[int] = set()
-
-    for i, seed in enumerate(all_pads):
-        if i in used:
-            continue
-        cluster: List[_Pad] = [seed]
-        used.add(i)
-        changed = True
-        while changed:
-            changed = False
-            for j, other in enumerate(all_pads):
-                if j in used:
-                    continue
-                if other.shape.page != cluster[0].shape.page:
-                    continue
-                if any(p.center.distance_to(other.center) <= cluster_radius
-                       for p in cluster):
-                    cluster.append(other)
-                    used.add(j)
-                    changed = True
-        clusters.append(cluster)
-
-    return clusters
-
-
 class PadAsymmetryDetector:
     """
     Component-aware polarity detection through copper pad shape asymmetry
     and F.Fab layer pin-1 notch marks.
 
-    Returns ``List[MatchResult]`` directly so the Matcher is bypassed —
-    the physical pad position already tells us unambiguously which component
-    the marker belongs to.
+    Usage::
+
+        detector = PadAsymmetryDetector()
+        markers  = detector.detect(shapes, components)
     """
 
     def __init__(self, config: Config = DEFAULT_CONFIG):
         self.cfg = config
 
-    # Maximum distance (pt) between pads of the same footprint
-    PAD_CLUSTER_RADIUS: float = 6.0
-
     def detect(
         self,
         shapes: List[VectorShape],
         components: List[Component],
-    ) -> List["MatchResult"]:
+    ) -> List[PolarityMarker]:
         """
-        Detect polarity markers using proper footprint clustering:
-
-          1. Classify all copper pads (rounded vs rectangular).
-          2. Cluster pads into footprints by spatial proximity — this avoids
-             the "search radius spills into neighbours" problem.
-          3. For each footprint cluster with BOTH rounded AND rect pads
-             (mixed shape = asymmetry = polarity indicator), take the single
-             rounded pad as the polarity mark.
-          4. Assign each polar-cluster to the nearest polar component.
-          5. Also detect F.Fab pin-1 circles for ICs.
-          6. Return one MatchResult per component.
+        Detect polarity markers by analysing pad asymmetry + fab-layer
+        shapes near each polar component.
         """
-        from core.matcher import MatchResult  # local import avoids circularity
-
         if not components:
             return []
 
-        # ── 1. Classify all copper pads ──────────────────────────────────
+        # 1. Build footprint search areas (still used for fab-pin1 only)
+        footprint_map = _build_footprint_areas(
+            components, shapes, fallback_radius=15.0
+        )
+
+        # 2. Classify all copper pads
         all_pads = [p for p in (_classify_pad(s) for s in shapes) if p is not None]
 
-        # ── 2. Build footprint areas (for F.Fab fallback only) ────────────
-        footprint_map = _build_footprint_areas(components, shapes, fallback_radius=15.0)
-        fab_shapes = [s for s in shapes
-                      if _is_fab_blue(s.stroke_color) or _is_fab_blue(s.fill_color)]
+        # 3. Collect F.Fab shapes (for IC pin-1 notch detection)
+        fab_shapes = [
+            s for s in shapes
+            if _is_fab_blue(s.stroke_color) or _is_fab_blue(s.fill_color)
+        ]
 
-        polar_comps = [c for c in components if c.is_polar]
+        markers: List[PolarityMarker] = []
 
-        # ── 3. Cluster pads into footprints ───────────────────────────────
-        clusters = _cluster_pads_into_footprints(all_pads, self.PAD_CLUSTER_RADIUS)
-
-        # ── 4. Find clusters with mixed pad shapes (= polarity indicator) ─
-        candidates: List[tuple] = []   # (dist_to_comp, rounded_pad, comp, conf)
-
-        for cluster in clusters:
-            n_rounded = sum(1 for p in cluster if p.is_rounded)
-            n_rect    = len(cluster) - n_rounded
-
-            # Mixed: has BOTH rounded AND rect pads → exactly the rounded one
-            # is the polarity pad.  Strict: rounded must be minority (1 pad).
-            if not (n_rounded == 1 and n_rect >= 1):
-                continue
-
-            rpad = next(p for p in cluster if p.is_rounded)
-            ratio = n_rounded / len(cluster)
-            conf  = round(0.90 - ratio * 0.10, 2)
-
-            # Cluster centre = average of all pad centres
-            cx = sum(p.center.x for p in cluster) / len(cluster)
-            cy = sum(p.center.y for p in cluster) / len(cluster)
-            cluster_center = Point(cx, cy)
-            page = rpad.shape.page
-
-            # Find closest polar component on the same page
-            best_comp, best_dist = None, float("inf")
-            for comp in polar_comps:
-                if comp.page != page:
-                    continue
-                d = comp.center.distance_to(cluster_center)
-                if d < best_dist:
-                    best_dist, best_comp = d, comp
-
-            # Max distance: footprint area should contain or be very close to comp text
-            max_assign_dist = max(25.0, footprint_map.get(
-                f"{best_comp.ref}_{best_comp.page}", BoundingBox(0,0,0,0)
-            ).width * 1.5 if best_comp else 25.0)
-
-            if best_comp is None or best_dist > max_assign_dist:
-                continue
-
-            candidates.append((best_dist, rpad, best_comp, conf))
-
-        # Sort closest-first
-        candidates.sort(key=lambda x: x[0])
-
-        # ── 5. Greedy one-to-one assignment ──────────────────────────────
-        assigned_comps: Dict[str, PolarityMarker] = {}   # comp_key → marker
-        used_pad_keys:  Set[tuple] = set()
-
-        for dist, rpad, comp, conf in candidates:
-            comp_key = f"{comp.ref}_{comp.page}"
-            pad_key  = (round(rpad.center.x, 1), round(rpad.center.y, 1))
-            if comp_key in assigned_comps or pad_key in used_pad_keys:
-                continue
-            used_pad_keys.add(pad_key)
-            assigned_comps[comp_key] = PolarityMarker(
-                marker_type="pad_asymmetry",
-                bbox=rpad.shape.bbox,
-                center=rpad.center,
-                page=comp.page,
-                confidence=conf,
-                source="shape",
-            )
-
-        # ── 5. F.Fab pin-1 notch for ICs that got no pad marker ─────────────
-        # Use the footprint BoundingBox (not a loose radius) so we only pick up
-        # F.Fab circles that are INSIDE the component's actual courtyard area.
-        # Expand the footprint by 4pt on each side to tolerate slight offsets.
-        FAB_EXPAND: float = 4.0
-
-        fab_candidates: List[tuple] = []
-        for comp in polar_comps:
-            comp_key = f"{comp.ref}_{comp.page}"
-            if comp_key in assigned_comps:
-                continue
-            if comp.comp_type not in ("ic",):
-                continue
-
-            fp = footprint_map.get(comp_key)
-            if fp is None:
-                continue
-            search_area = BoundingBox(
-                fp.x0 - FAB_EXPAND, fp.y0 - FAB_EXPAND,
-                fp.x1 + FAB_EXPAND, fp.y1 + FAB_EXPAND,
-            )
-
-            for s in fab_shapes:
-                if s.shape_type not in ("circle", "filled_circle"):
-                    continue
-                if s.page != comp.page:
-                    continue
-                r = (s.bbox.width + s.bbox.height) / 4.0
-                if not (0.5 <= r <= 6.0):
-                    continue
-                if search_area.contains_point(s.bbox.center):
-                    d = comp.center.distance_to(s.bbox.center)
-                    fab_candidates.append((d, s, comp))
-
-        fab_candidates.sort(key=lambda x: x[0])
-
-        used_fab_centers: Set[tuple] = set()
-        for dist, s, comp in fab_candidates:
-            comp_key = f"{comp.ref}_{comp.page}"
-            fab_key  = (round(s.bbox.center.x, 1), round(s.bbox.center.y, 1))
-            if comp_key in assigned_comps or fab_key in used_fab_centers:
-                continue
-            assigned_comps[comp_key] = PolarityMarker(
-                marker_type="fab_pin1_notch",
-                bbox=s.bbox,
-                center=s.bbox.center,
-                page=comp.page,
-                confidence=0.78,
-                source="shape",
-            )
-            used_fab_centers.add(fab_key)
-
-        # ── 6. Build MatchResult list for ALL components ──────────────────
-        results: List[MatchResult] = []
         for comp in components:
-            comp_key = f"{comp.ref}_{comp.page}"
-            marker   = assigned_comps.get(comp_key)
-            if marker is not None:
-                results.append(MatchResult(
-                    component=comp,
-                    markers=[marker],
-                    polarity_status="marked",
-                    overall_confidence=marker.confidence,
-                ))
-            else:
-                results.append(MatchResult(
-                    component=comp,
-                    polarity_status="unmarked" if comp.is_polar else "unmarked",
-                ))
-        return results
+            if not comp.is_polar:
+                continue
+
+            key = f"{comp.ref}_{comp.page}"
+
+            # --- Pad asymmetry (radius-based search) ---
+            m = self._check_pad_asymmetry(comp, all_pads)
+            if m is not None:
+                markers.append(m)
+                continue   # found via pads, no need for fab check
+
+            # --- F.Fab pin-1 notch (fallback for ICs) ---
+            if comp.comp_type in ("ic",):
+                area = footprint_map.get(key)
+                if area is not None:
+                    m2 = self._check_fab_pin1(comp, area, fab_shapes)
+                    if m2 is not None:
+                        markers.append(m2)
+
+        return markers
+
+    # ── Pad asymmetry rule ────────────────────────────────────────────────
+
+    # Radius (pt) around component center to search for copper pads
+    PAD_SEARCH_RADIUS: float = 20.0
+
+    def _check_pad_asymmetry(
+        self,
+        comp: Component,
+        all_pads: List[_Pad],
+    ) -> Optional[PolarityMarker]:
+        """
+        Within a radius around the component center, find all copper pads.
+        If there is a clear minority of rounded pads among rectangular pads
+        (or vice versa), the outlier marks the polarity / pin-1 position.
+
+        Uses a simple radius search (robust) instead of courtyard areas.
+        """
+        # Collect pads within search radius of the component center
+        pads_in: List[_Pad] = [
+            p for p in all_pads
+            if p.shape.page == comp.page
+            and comp.center.distance_to(p.center) <= self.PAD_SEARCH_RADIUS
+        ]
+
+        if len(pads_in) < 2:
+            return None
+
+        n_rounded = sum(1 for p in pads_in if p.is_rounded)
+        n_rect    = len(pads_in) - n_rounded
+
+        # We want a clear minority: exactly 1 outlier (or a small minority)
+        outlier_pads: List[_Pad]
+        if 0 < n_rounded <= max(1, len(pads_in) // 3) and n_rect > 0:
+            # Rounded pads are the minority → they mark polarity
+            outlier_pads = [p for p in pads_in if p.is_rounded]
+        elif 0 < n_rect <= max(1, len(pads_in) // 3) and n_rounded > 0:
+            # Rect pads are the minority (unusual but possible)
+            outlier_pads = [p for p in pads_in if not p.is_rounded]
+        else:
+            return None   # no clear asymmetry
+
+        # Pick the outlier pad closest to the component center
+        best = min(outlier_pads, key=lambda p: comp.center.distance_to(p.center))
+
+        # Confidence scales with how clear the asymmetry is
+        ratio = len(outlier_pads) / len(pads_in)
+        conf = 0.92 - ratio * 0.15   # e.g. 1/20 → 0.91, 1/2 → 0.84
+
+        return PolarityMarker(
+            marker_type="pad_asymmetry",
+            bbox=best.shape.bbox,
+            center=best.center,
+            page=comp.page,
+            confidence=round(conf, 2),
+            source="shape",
+        )
 
     # ── F.Fab pin-1 notch rule ────────────────────────────────────────────
 
@@ -434,27 +326,44 @@ class PadAsymmetryDetector:
         area: BoundingBox,
         fab_shapes: List[VectorShape],
     ) -> Optional[PolarityMarker]:
-        """Small F.Fab arc/circle near a corner of the IC body = pin-1."""
+        """
+        On the F.Fab (blue) layer, ICs often have a small arc or circle
+        near pin-1 that distinguishes it from the rectangular body outline.
+
+        We look for small blue circles or arcs (bbox < 4 pt) within the
+        footprint area that are NOT part of the main rectangular outline.
+        """
         candidates: List[VectorShape] = []
         for s in fab_shapes:
             if s.page != comp.page:
                 continue
             if not area.contains_point(s.bbox.center):
                 continue
+            # Must be small (notch/dot, not a body outline side)
             if s.bbox.width > 4.0 or s.bbox.height > 4.0:
                 continue
+            # Must have some non-zero dimension
             if s.bbox.width < 0.2 and s.bbox.height < 0.2:
                 continue
+            # Circles or arcs (Bézier paths)
             if s.shape_type in ("circle", "filled_circle", "path"):
                 candidates.append(s)
+
         if not candidates:
             return None
+
+        # Pick the one closest to a corner of the footprint area (pin-1 is
+        # always at a corner of the IC body)
         corners = [
             Point(area.x0, area.y0), Point(area.x1, area.y0),
             Point(area.x0, area.y1), Point(area.x1, area.y1),
         ]
-        best = min(candidates,
-                   key=lambda s: min(s.bbox.center.distance_to(c) for c in corners))
+
+        def _min_corner_dist(s: VectorShape) -> float:
+            return min(s.bbox.center.distance_to(c) for c in corners)
+
+        best = min(candidates, key=_min_corner_dist)
+
         return PolarityMarker(
             marker_type="fab_pin1_notch",
             bbox=best.bbox,

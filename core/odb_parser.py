@@ -47,10 +47,11 @@ _VCC_KEYWORDS = ("VCC", "VDD", "VIN", "VBUS", "VSUPPLY", "VMOT",
 
 @dataclass
 class _ODBPin:
-    number: int     # 1-based pin number
+    number: int     # 1-based pin number (0 if non-numeric name)
     x: float        # absolute X in source units
     y: float        # absolute Y in source units
     net_id: int = 0 # net index (used for cathode detection via netlist)
+    name: str = ""  # pin identifier suffix: "1", "A", "K", "G", "S", "D", "P1", ...
 
 
 @dataclass
@@ -67,6 +68,7 @@ class _ODBComponent:
 
     # Set by resolve_polarity() — None means use heuristic
     _cathode_pin_num: Optional[int] = field(default=None, repr=False)
+    _cathode_pin_name: Optional[str] = field(default=None, repr=False)
 
     def resolve_polarity(self, net_map: Dict[int, str]) -> None:
         """Use net names from the ODB++ netlist to find the cathode pin.
@@ -85,6 +87,7 @@ class _ODBComponent:
             nm = net_map.get(pin.net_id, "").upper()
             if any(kw in nm for kw in _GND_KEYWORDS):
                 self._cathode_pin_num = pin.number
+                self._cathode_pin_name = pin.name
                 return
 
         # Pass 2: VCC keyword → the other pin is cathode
@@ -94,6 +97,7 @@ class _ODBComponent:
                 others = [p for p in self.pins if p.number != pin.number]
                 if others:
                     self._cathode_pin_num = others[0].number
+                    self._cathode_pin_name = others[0].name
                     return
 
     @property
@@ -116,16 +120,42 @@ class _ODBComponent:
 
         - Diodes / LEDs: the cathode pin determined by:
             1. Net-name lookup (most reliable, via resolve_polarity())
-            2. Fallback: pin 2 (standard SMD diode convention: pin1=anode, pin2=cathode)
+            2. Functional pin name: 'K', 'KA', 'CAT', 'CATH', 'CATHODE', 'NEG'
+            3. Anode identified → other pin is cathode: 'A', 'AN', 'ANODE', 'POS'
+            4. Fallback: pin 2 (standard SMD diode convention: pin1=anode, pin2=cathode)
+        - Transistors: gate/base pin ('G', 'GATE', 'B', 'BASE') or pin 1
         - All other components: pin 1.
         """
         if self.comp_type in ("diode", "led"):
+            # 1. Net-name lookup — match by stored name first, then by number
+            if self._cathode_pin_name is not None:
+                for p in self.pins:
+                    if p.name == self._cathode_pin_name:
+                        return p
             if self._cathode_pin_num is not None:
                 for p in self.pins:
                     if p.number == self._cathode_pin_num:
                         return p
-            # Fallback heuristic: pin 2 = cathode for 2-pin SMD diodes
+            # 2. Functional cathode names
+            for p in self.pins:
+                if p.name.upper() in _CATHODE_NAMES:
+                    return p
+            # 3. Functional anode names → other pin is cathode
+            for p in self.pins:
+                if p.name.upper() in _ANODE_NAMES:
+                    others = [x for x in self.pins if x is not p]
+                    if others:
+                        return others[0]
+            # 4. Fallback: pin 2 = cathode
             return self.pin2 or self.pin1
+
+        if self.comp_type == "transistor":
+            # Gate / base = control pin for polarity marking
+            for p in self.pins:
+                if p.name.upper() in _GATE_NAMES:
+                    return p
+            return self.pin1
+
         return self.pin1
 
     @property
@@ -155,13 +185,46 @@ class _ODBComponent:
 
     def _is_ceramic_cap(self) -> bool:
         pkg = self.package.upper()
+        desc = self.description.upper()
+
+        # Determine if description suggests an electrolytic/polar capacitor:
+        # "POLARIZED" is only electrolytic if NOT preceded by "UN"
+        _ELEC_DESC_KW = ("ELKO", "ALU-ELKO", "ALUM", "TANT", "ELECTROLYTIC",
+                         "EL.CAP", "ALUMINIUM", "ALUMINUM", "POLYMER")
+        is_elec_desc = any(kw in desc for kw in _ELEC_DESC_KW)
+        if "POLARIZED" in desc and "UNPOLAR" not in desc:
+            is_elec_desc = True
+
+        # If description strongly suggests electrolytic → NOT ceramic
+        if is_elec_desc:
+            return False
+
         if pkg:
+            # Standard IPC-7351 chip capacitor prefixes
             if pkg.startswith("CAPC") or pkg.startswith("CAPMP"):
                 return True
-            if pkg.startswith("CAPE") or pkg.startswith("CAPPR") or pkg.startswith("CAPT"):
+            # Electrolytic / polar body types (package name contains these)
+            _ELEC_PKG_KW = ("EL", "POL", "TANT", "ELKO", "ECAP", "ALUM",
+                            "CAP_EL", "CAP_AL")
+            if any(kw in pkg for kw in _ELEC_PKG_KW):
                 return False
+            # Electrolytic package shape prefixes (IPC-7351 radial/axial)
+            if pkg.startswith(("CAPPR", "CAPE", "CAPT", "CP_ELEC", "CP_TANT")):
+                return False
+            # Standard SMD chip sizes (Altium/other CAD tool Body format)
+            # These are all non-polar ceramic capacitor package designators
+            _CHIP_SIZES = {"0201", "0402", "0603", "0805", "1206", "1210",
+                           "1812", "2512", "1805", "0303", "0606", "1616"}
+            if pkg in _CHIP_SIZES or any(pkg.startswith(s) for s in _CHIP_SIZES):
+                return True
+            # MLCC / ceramic keyword in package name
+            if "MLCC" in pkg or pkg.startswith("CHIPLED"):
+                return True
+
+        # Fallback heuristic: 2 pins + small pitch → assume ceramic
         if len(self.pins) == 2 and self.pin_span_mm < 5.0:
-            if not pkg or not any(kw in pkg for kw in ("EL", "POL", "TANT", "ELKO")):
+            _elec_pkg_kw = ("EL", "POL", "TANT", "ELKO", "ECAP", "ALUM")
+            if not any(kw in pkg for kw in _elec_pkg_kw) and not is_elec_desc:
                 return True
         return False
 
@@ -181,21 +244,79 @@ _RE_CMP = re.compile(
     re.IGNORECASE,
 )
 
-# TOP <pad_idx> <abs_x> <abs_y> <rot> <N/Y> <net_id> <subnet> <pin_number>
+# TOP <pad_idx> <abs_x> <abs_y> <rot> <N/Y> <net_id> <subnet> <pin_name>
+# pin_name may be a plain integer ("1"), a functional name ("A","K","G","S","D"),
+# or a REFDES-PINNAME string ("IC700-1", "D804-A", "D804-K").
 _RE_TOP = re.compile(
     r"^TOP\s+\d+\s+"
     r"([\d.eE+-]+)\s+([\d.eE+-]+)\s+"  # x, y
     r"[\d.eE+-]+\s+"                    # rotation (skip)
     r"[NY]\s+"                          # mirrored (skip)
     r"(\d+)\s+\d+\s+"                  # net_id (capture), subnet (skip)
-    r"(\d+)",                           # pin_number
+    r"(\S+)",                           # pin_name — may be "1","A","K","IC700-1", etc.
     re.IGNORECASE,
 )
 
-# PRP PKG_TYPE 'value'
-_RE_PRP_PKG = re.compile(r"^PRP\s+PKG_TYPE\s+'([^']*)'", re.IGNORECASE)
-# PRP Description 'value'
-_RE_PRP_DESC = re.compile(r"^PRP\s+Description\s+'([^']*)'", re.IGNORECASE)
+# PRP PKG_TYPE 'value'  ← KiCad / Altium "PKG_TYPE"
+# PRP Body 'value'      ← Altium "Body" field
+_RE_PRP_PKG = re.compile(r"^PRP\s+(?:PKG_TYPE|Body)\s+'([^']*)'", re.IGNORECASE)
+
+# PRP Description 'value'           ← KiCad
+# PRP ShortDesription 'value'       ← Altium (note typo in spec)
+# PRP ShortDescription 'value'      ← Altium (correctly spelled)
+# PRP Bezeichnung 'value'           ← German CAD tools
+_RE_PRP_DESC = re.compile(
+    r"^PRP\s+(?:Description|ShortDesription|ShortDescription|Bezeichnung)\s+'([^']*)'",
+    re.IGNORECASE,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Functional pin name sets (used for polarity detection)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Pin names that indicate the CATHODE side of a diode/LED
+_CATHODE_NAMES = frozenset({"K", "KA", "CAT", "CATH", "CATHODE", "NEG"})
+# Pin names that indicate the ANODE side (the OTHER pin is cathode)
+_ANODE_NAMES   = frozenset({"A", "AN", "ANODE", "POS"})
+# Pin names that indicate the gate/base of a transistor
+_GATE_NAMES    = frozenset({"G", "GATE", "B", "BASE"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pin name helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _pin_suffix(raw_name: str) -> str:
+    """Extract the pin identifier from an ODB++ pin name.
+
+    Two common formats:
+      - Plain:        '1', '2', 'A', 'K', 'G', 'P1'
+      - RefDes-Pin:   'D804-A', 'IC700-1', 'IC700-P1'  → strip refdes prefix
+    """
+    if '-' in raw_name:
+        return raw_name.rsplit('-', 1)[-1]
+    return raw_name
+
+
+def _pin_num(suffix: str) -> int:
+    """Convert a pin suffix string to an integer pin number.
+
+    'A', 'K', 'G', 'S', 'D' → 0  (functional names, not numbered)
+    '1', '2', '3'            → 1, 2, 3
+    'P1', 'P2'               → 1, 2  (thermal pad)
+    '1A', '1B'               → 1     (multi-section)
+    """
+    if suffix.isdigit():
+        return int(suffix)
+    # P<n> thermal pad
+    if len(suffix) > 1 and suffix[0].upper() == 'P' and suffix[1:].isdigit():
+        return int(suffix[1:])
+    # Leading digits (e.g. "1A", "1B")
+    m = re.match(r'^(\d+)', suffix)
+    if m:
+        return int(m.group(1))
+    return 0  # functional name — not a numbered pin
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -389,6 +510,7 @@ class ODBParser:
                     rotation=float(m.group(3)),
                     mirrored=(m.group(4).upper() == "Y"),
                     side=side,
+                    package=m.group(6),  # initial: footprint/partnum from CMP line
                 )
                 components.append(current)
                 continue
@@ -411,11 +533,15 @@ class ODBParser:
             # Parse TOP line (pad / pin)
             m = _RE_TOP.match(line)
             if m:
+                raw_pin_name = m.group(4)           # e.g. "D804-A", "IC700-1", "1"
+                suffix = _pin_suffix(raw_pin_name)  # e.g. "A",      "1",       "1"
+                num    = _pin_num(suffix)            # e.g.  0,        1,         1
                 current.pins.append(_ODBPin(
                     x=float(m.group(1)),
                     y=float(m.group(2)),
                     net_id=int(m.group(3)),
-                    number=int(m.group(4)),
+                    number=num,
+                    name=suffix,
                 ))
         return components
 
