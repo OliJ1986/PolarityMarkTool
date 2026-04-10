@@ -4,7 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Add DNP (Do-Not-Place) support and enhance correction dialog for bulk editing" />
+    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Add DNP (Do-Not-Place) support and enhance correction dialog for bulk editing">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/odb_parser.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_parser.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/core/odb_renderer.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_renderer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/main_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui/pdf_preview.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/pdf_preview.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -27,6 +33,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;OliJ1986&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/OliJ1986/PolarityMarkTool.git&quot;,
+    &quot;accountId&quot;: &quot;2a8b3176-434d-41ef-ad6d-49329cfafa8a&quot;
+  }
+}</component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 3
 }</component>
@@ -38,6 +56,7 @@
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
+    "Python._fix2.executor": "Run",
     "Python._test_color_filter.executor": "Run",
     "Python.app.executor": "Run",
     "Python.correction_dialog.executor": "Run",
@@ -48,6 +67,7 @@
     "Python.odb_registration.executor": "Run",
     "Python.odb_renderer.executor": "Run",
     "Python.pad_asymmetry_detector.executor": "Run",
+    "Python.test_layers.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "git-widget-placeholder": "master",
@@ -63,7 +83,7 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-fc1d50d2d915-aa17d162503b-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-243.24978.54" />
+        <option value="bundled-python-sdk-f78a9d071105-aa17d162503b-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-243.26574.90" />
       </set>
     </attachedChunks>
   </component>
@@ -156,7 +176,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775135104439</updated>
     </task>
-    <option name="localTasksCounter" value="11" />
+    <task id="LOCAL-00011" summary="Add DNP (Do-Not-Place) support and enhance correction dialog for bulk editing">
+      <option name="closed" value="true" />
+      <created>1775136213118</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1775136213118</updated>
+    </task>
+    <option name="localTasksCounter" value="12" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">

@@ -194,6 +194,9 @@ class _ODBComponent:
         is_elec_desc = any(kw in desc for kw in _ELEC_DESC_KW)
         if "POLARIZED" in desc and "UNPOLAR" not in desc:
             is_elec_desc = True
+        # Standalone ",EL," token in comma-separated descriptions (Xpedition style)
+        if not is_elec_desc and re.search(r'(^|,|\s)EL($|,|\s)', desc):
+            is_elec_desc = True
 
         # If description strongly suggests electrolytic → NOT ceramic
         if is_elec_desc:
@@ -365,6 +368,19 @@ class ODBParser:
                     )
                     break
 
+            # Read board profile for fallback unit detection
+            profile_content: Optional[str] = None
+            prof_cands = [n for n in names
+                          if re.search(r'/steps/[^/]+/profile$', n.lower())]
+            if not prof_cands:
+                prof_cands = [n for n in names if n.lower().endswith("/profile")]
+            if prof_cands:
+                try:
+                    profile_content = zf.read(prof_cands[0]).decode(
+                        "utf-8", errors="replace")
+                except Exception:
+                    pass
+
             for side in ("top", "bot"):
                 pattern = f"comp_+_{side}/components"
                 candidates = [n for n in names if n.endswith(pattern)]
@@ -372,7 +388,12 @@ class ODBParser:
                     continue
                 content = zf.read(candidates[0]).decode("utf-8", errors="replace")
                 scale = self._detect_scale(content)
+                if scale == MM_TO_PT and profile_content is not None:
+                    scale = self._resolve_scale_from_profile(content,
+                                                             profile_content)
                 batch = self._parse_components(content, side)
+                if scale == INCH_TO_PT:
+                    self._normalize_to_mm(batch)
                 for c in batch:
                     c.resolve_polarity(net_map)
                 comps.extend(batch)
@@ -381,7 +402,7 @@ class ODBParser:
                     f"No comp_+_top/components found in ZIP.\n"
                     f"Contents: {names[:30]}"
                 )
-        return comps, scale
+        return comps, MM_TO_PT
 
     # ── TGZ ───────────────────────────────────────────────────────────────
 
@@ -406,6 +427,17 @@ class ODBParser:
                         )
                     break
 
+            # Read board profile for fallback unit detection
+            profile_content: Optional[str] = None
+            prof_cands = [n for n in names
+                          if re.search(r'/steps/[^/]+/profile$', n.lower())]
+            if not prof_cands:
+                prof_cands = [n for n in names if n.lower().endswith("/profile")]
+            if prof_cands:
+                f = tf.extractfile(tf.getmember(prof_cands[0]))
+                if f:
+                    profile_content = f.read().decode("utf-8", errors="replace")
+
             for side in ("top", "bot"):
                 pattern = f"comp_+_{side}/components"
                 candidates = [n for n in names if n.endswith(pattern)]
@@ -414,7 +446,13 @@ class ODBParser:
                 f = tf.extractfile(tf.getmember(candidates[0]))
                 content = f.read().decode("utf-8", errors="replace")
                 scale = self._detect_scale(content)
+                # Xpedition Layout omits UNITS in components file → use profile
+                if scale == MM_TO_PT and profile_content is not None:
+                    scale = self._resolve_scale_from_profile(content,
+                                                             profile_content)
                 batch = self._parse_components(content, side)
+                if scale == INCH_TO_PT:
+                    self._normalize_to_mm(batch)
                 for c in batch:
                     c.resolve_polarity(net_map)
                 comps.extend(batch)
@@ -422,7 +460,8 @@ class ODBParser:
                 raise FileNotFoundError(
                     f"No comp_+_top/components in TGZ.\nContents: {names[:30]}"
                 )
-        return comps, scale
+        # Coordinates are always in mm after optional normalization
+        return comps, MM_TO_PT
 
     # ── Directory ─────────────────────────────────────────────────────────
 
@@ -442,6 +481,18 @@ class ODBParser:
                     pass
                 break
 
+        # Read board profile for fallback unit detection
+        profile_content: Optional[str] = None
+        for root, _dirs, files in os.walk(dir_path):
+            if "profile" in files:
+                fpath = os.path.join(root, "profile")
+                try:
+                    with open(fpath, encoding="utf-8", errors="replace") as fh:
+                        profile_content = fh.read()
+                except Exception:
+                    pass
+                break
+
         for side in ("top", "bot"):
             for root, _dirs, files in os.walk(dir_path):
                 dirname = os.path.basename(root).lower()
@@ -450,25 +501,117 @@ class ODBParser:
                     with open(fpath, encoding="utf-8", errors="replace") as fh:
                         content = fh.read()
                     scale = self._detect_scale(content)
+                    if scale == MM_TO_PT and profile_content is not None:
+                        scale = self._resolve_scale_from_profile(
+                            content, profile_content)
                     batch = self._parse_components(content, side)
+                    if scale == INCH_TO_PT:
+                        self._normalize_to_mm(batch)
                     for c in batch:
                         c.resolve_polarity(net_map)
                     comps.extend(batch)
         if not comps:
             raise FileNotFoundError(f"No comp_+_top/components under: {dir_path}")
-        return comps, scale
+        return comps, MM_TO_PT
 
     # ── Unit detection ────────────────────────────────────────────────────
 
     @staticmethod
     def _detect_scale(content: str) -> float:
+        """Detect coordinate scale from file header.
+
+        Handles both formats:
+          • ``UNITS=INCH`` / ``UNITS=MM``  (KiCad / old-style)
+          • ``U INCH`` / ``U MM``           (ODB++ features / Xpedition profile)
+        Returns MM_TO_PT (default) when no declaration is found.
+        """
         for line in content.splitlines()[:15]:
             stripped = line.strip().upper()
             if stripped.startswith("UNITS"):
                 if "INCH" in stripped:
                     return INCH_TO_PT
                 return MM_TO_PT
+            # ODB++ features/profile format: "U MM" or "U INCH"
+            if re.match(r'^U\s+(MM|INCH)', stripped):
+                if "INCH" in stripped:
+                    return INCH_TO_PT
+                return MM_TO_PT
         return MM_TO_PT
+
+    @staticmethod
+    def _resolve_scale_from_profile(comp_content: str,
+                                    profile_content: str) -> float:
+        """Fallback unit detection for *components* files that carry no explicit
+        ``UNITS`` declaration (Xpedition Layout exports components in inches even
+        when the rest of the board is in millimetres).
+
+        Strategy: compare the component coordinate extent against the board
+        bounding-box derived from the *profile* file.  The unit that produces a
+        ratio closest to 1.0 wins.
+        """
+        # --- Profile bounding box (in mm) ---
+        prof_scale = MM_TO_PT
+        for line in profile_content.splitlines()[:15]:
+            s = line.strip().upper()
+            if s.startswith("UNITS"):
+                prof_scale = INCH_TO_PT if "INCH" in s else MM_TO_PT
+                break
+            if re.match(r'^U\s+(MM|INCH)', s):
+                prof_scale = INCH_TO_PT if "INCH" in s else MM_TO_PT
+                break
+
+        prof_c2mm = 25.4 if prof_scale == INCH_TO_PT else 1.0
+        pxs: List[float] = []
+        pys: List[float] = []
+        for ln in profile_content.splitlines():
+            m = re.match(r'^O[BS]\s+([\d.eE+-]+)\s+([\d.eE+-]+)',
+                         ln.strip(), re.IGNORECASE)
+            if m:
+                pxs.append(float(m.group(1)) * prof_c2mm)
+                pys.append(float(m.group(2)) * prof_c2mm)
+
+        if not pxs:
+            return MM_TO_PT
+
+        prof_ext_x_mm = max(pxs) - min(pxs)
+        prof_ext_y_mm = max(pys) - min(pys)
+        if prof_ext_x_mm < 1.0:            # profile too small to be reliable
+            return MM_TO_PT
+
+        # --- Component coordinate extent ---
+        cxs: List[float] = []
+        cys: List[float] = []
+        for ln in comp_content.splitlines():
+            m = _RE_CMP.match(ln.strip())
+            if m:
+                cxs.append(float(m.group(1)))
+                cys.append(float(m.group(2)))
+
+        if not cxs:
+            return MM_TO_PT
+
+        comp_ext_x = max(cxs) - min(cxs)
+        comp_ext_y = max(cys) - min(cys)
+        if comp_ext_x < 1e-6:
+            return MM_TO_PT
+
+        # Compare ratios: ideal = 1.0 when units match
+        ratio_as_mm   = comp_ext_x / prof_ext_x_mm
+        ratio_as_inch = (comp_ext_x * 25.4) / prof_ext_x_mm
+
+        if abs(ratio_as_inch - 1.0) < abs(ratio_as_mm - 1.0):
+            return INCH_TO_PT
+        return MM_TO_PT
+
+    @staticmethod
+    def _normalize_to_mm(comps: "List[_ODBComponent]") -> None:
+        """Convert all coordinates in *comps* from inches to mm in-place."""
+        for c in comps:
+            c.x *= 25.4
+            c.y *= 25.4
+            for p in c.pins:
+                p.x *= 25.4
+                p.y *= 25.4
 
     # ── Netlist parser (cadnet format: "$0 NET_NAME") ─────────────────────
 
@@ -558,12 +701,13 @@ class ODBParser:
         for oc in odb_comps:
             cx_pt = oc.x * unit_scale
             cy_pt = oc.y * unit_scale
+            page_idx = 0 if oc.side == "top" else 1
             comp = Component(
                 ref=oc.ref,
                 comp_type=oc.comp_type,
                 bbox=BoundingBox(cx_pt - 3, cy_pt - 3, cx_pt + 3, cy_pt + 3),
                 center=Point(cx_pt, cy_pt),
-                page=0,
+                page=page_idx,
             )
             p_pin = oc.polarity_pin
             if p_pin is not None and oc.is_polar:
@@ -574,7 +718,7 @@ class ODBParser:
                     marker_type=mtype,
                     bbox=BoundingBox(p1x - 2, p1y - 2, p1x + 2, p1y + 2),
                     center=Point(p1x, p1y),
-                    page=0,
+                    page=page_idx,
                     confidence=0.99,
                     source="odb",
                 )

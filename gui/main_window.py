@@ -1,4 +1,4 @@
-﻿"""
+"""
 gui/main_window.py
 ──────────────────
 PySide6 main window for PolarityMark.
@@ -39,7 +39,7 @@ from core.matcher import Matcher, MatchResult
 from core.exporter import Exporter
 from utils.config import Config
 from gui.correction_dialog import CorrectionDialog
-from gui.pdf_preview import PDFPreviewWidget
+from gui.pdf_preview import PDFPreviewWidget, PreviewDialog
 
 COL_REF = 0; COL_TYPE = 1; COL_PAGE = 2; COL_STATUS = 3; COL_CONF = 4; COL_MARKERS = 5
 _STATUS_COLOR = {
@@ -261,7 +261,7 @@ class AnalysisWorker(QObject):
                                      ("refdes", self.draw_refdes)] if v]
         self.log.emit(
             f"\n🖨️  Rendering ODB++ → PDF  "
-            f"[rétegek: {', '.join(layers_on) if layers_on else 'csak outline+markers'}] …"
+            f"[layers: {', '.join(layers_on) if layers_on else 'outline+markers only'}] …"
         )
         base    = os.path.splitext(self.file_path)[0]
         out_pdf = base + "_polarity.pdf"
@@ -419,7 +419,7 @@ class MainWindow(QMainWindow):
         ig = QVBoxLayout(input_group)
         odb_row = QHBoxLayout()
         self._odb_edit = QLineEdit()
-        self._odb_edit.setPlaceholderText("ODB++ forrás (.tgz / .zip / könyvtár) …")
+        self._odb_edit.setPlaceholderText("ODB++ source file (.tgz / .zip / directory) …")
         self._odb_edit.setReadOnly(True)
         odb_browse = QPushButton("Browse…")
         odb_browse.setFixedWidth(90)
@@ -434,23 +434,23 @@ class MainWindow(QMainWindow):
         odb_row.addWidget(odb_clear)
         ig.addLayout(odb_row)
 
-        # ── DNP (Do-Not-Place / nem beültetett) ───────────────────────────
+        # ── DNP (Do-Not-Place) ───────────────────────────────────────────
         dnp_row = QHBoxLayout()
         dnp_lbl = QLabel("DNP:")
         dnp_lbl.setFixedWidth(36)
-        dnp_lbl.setToolTip("Nem beültetett alkatrészek")
+        dnp_lbl.setToolTip("Do-Not-Place components")
         self._dnp_edit = QLineEdit()
         self._dnp_edit.setPlaceholderText(
-            "Nem beültetett alkatrészek vesszővel elválasztva  (pl.: R5, C3, D12, U4) …"
+            "Do-Not-Place components (comma-separated, e.g.: R5, C3, D12, U4) …"
         )
         self._dnp_edit.setToolTip(
-            "Ezeket az alkatrészeket narancssárgával jelöli a PDF-en és az előnézeten.\n"
-            "Polaritás jelölő nem kerül rájuk."
+            "These components are highlighted orange in the PDF and preview.\n"
+            "No polarity marker is drawn for them."
         )
         self._dnp_edit.textChanged.connect(self._on_dnp_changed)
         dnp_clear_btn = QPushButton("✕")
         dnp_clear_btn.setFixedWidth(28)
-        dnp_clear_btn.setToolTip("DNP lista törlése")
+        dnp_clear_btn.setToolTip("Clear DNP list")
         dnp_clear_btn.clicked.connect(lambda: self._dnp_edit.clear())
         dnp_row.addWidget(dnp_lbl)
         dnp_row.addWidget(self._dnp_edit)
@@ -468,28 +468,28 @@ class MainWindow(QMainWindow):
         self._fab_cb = QCheckBox("Fab")
         self._fab_cb.setChecked(False)
         self._fab_cb.setToolTip(
-            "Fab/assembly réteg — komponens testek körvonala.\n"
-            "Sok vonal (~7000+), lassabb render."
+            "Fab/assembly layer — component body outlines.\n"
+            "Many lines (~7000+), slower render."
         )
         self._silk_cb = QCheckBox("Silkscreen")
         self._silk_cb.setChecked(False)
-        self._silk_cb.setToolTip("Silkscreen réteg — feliratok, polaritás-szimbólumok.")
+        self._silk_cb.setToolTip("Silkscreen layer — labels and polarity symbols.")
         self._court_cb = QCheckBox("Courtyard")
         self._court_cb.setChecked(True)
         self._court_cb.setToolTip(
-            "Courtyard réteg — komponens-területek határvonala.\n"
-            "Kevés vonal, gyors."
+            "Courtyard layer — component boundary outlines.\n"
+            "Few lines, fast render."
         )
         self._notes_cb = QCheckBox("Notes/User Drawing")
         self._notes_cb.setChecked(True)
         self._notes_cb.setToolTip(
-            "Notes/User Drawing réteg — gyakran itt van a fejléc/lábléc, rajzkeret."
+            "Notes/User Drawing layer — often contains the title block and border."
         )
         self._refdes_cb = QCheckBox("RefDes")
         self._refdes_cb.setChecked(True)
         self._refdes_cb.setToolTip(
-            "Referencia-jelölők (pl. U1, C3, D5) megjelenítése a PDF-en.\n"
-            "Kikapcsolva a rajz tisztább, de az alkatrészek nem azonosíthatók."
+            "Show reference designators (e.g. U1, C3, D5) on the PDF.\n"
+            "Disable for a cleaner view without component labels."
         )
 
         self._analyze_btn = QPushButton("🔍  Analyze")
@@ -539,7 +539,7 @@ class MainWindow(QMainWindow):
         res_layout = QVBoxLayout(res_group)
         self._results_search = QLineEdit()
         self._results_search.setPlaceholderText(
-            "Keresés: ref / type / status / marker …"
+            "Search: ref / type / status / marker …"
         )
         self._results_search.textChanged.connect(self._apply_results_filter)
         res_layout.addWidget(self._results_search)
@@ -570,10 +570,7 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(res_group)
 
-        # ── PDF Preview (third pane) ───────────────────────────────────────
-        prev_group = QGroupBox("PDF előnézet")
-        prev_layout = QVBoxLayout(prev_group)
-        prev_layout.setContentsMargins(4, 4, 4, 4)
+        # ── PDF Preview — lives in a separate floating window ─────────────
         self._preview = PDFPreviewWidget()
         self._preview.component_clicked.connect(self._on_preview_component_clicked)
         self._preview.component_edit_requested.connect(self._on_preview_edit_requested)
@@ -581,10 +578,22 @@ class MainWindow(QMainWindow):
         self._preview.preview_context_menu_requested.connect(
             self._on_preview_context_menu
         )
-        prev_layout.addWidget(self._preview)
-        splitter.addWidget(prev_group)
+        self._preview_dialog = PreviewDialog(self._preview, parent=self)
 
-        splitter.setSizes([300, 380, 520])
+        # Small button below the results table to open the preview window
+        open_prev_row = QHBoxLayout()
+        self._open_preview_btn = QPushButton("🔍  Open PDF Preview…")
+        self._open_preview_btn.setEnabled(False)
+        self._open_preview_btn.setToolTip(
+            "Open the rendered PDF in a separate window.\n"
+            "The window is resizable and supports fullscreen (F11)."
+        )
+        self._open_preview_btn.clicked.connect(self._open_preview_window)
+        open_prev_row.addStretch()
+        open_prev_row.addWidget(self._open_preview_btn)
+        res_layout.addLayout(open_prev_row)
+
+        splitter.setSizes([300, 900])
         root.addWidget(splitter, 1)
 
         self.statusBar().showMessage("Ready.  Load an ODB++ file to begin.")
@@ -604,7 +613,7 @@ class MainWindow(QMainWindow):
         self._preview.set_dnp_refs(self._dnp_refs)
         if self._dnp_refs:
             self.statusBar().showMessage(
-                f"DNP: {len(self._dnp_refs)} alkatrész jelölve  —  "
+                f"DNP: {len(self._dnp_refs)} component(s) marked  —  "
                 "Re-render to bake into PDF."
             )
 
@@ -641,9 +650,22 @@ class MainWindow(QMainWindow):
         self._log_view.clear()
         self._table.setRowCount(0)
         self._export_btn.setEnabled(False)
+        self._open_preview_btn.setEnabled(False)
         self._progress.setValue(0)
         self._comp_positions = {}
         self._preview.clear()
+
+    @Slot()
+    def _open_preview_window(self) -> None:
+        """Show / raise the floating PDF preview window."""
+        self._preview_dialog.show()
+        self._preview_dialog.raise_()
+        self._preview_dialog.activateWindow()
+
+    def _load_preview(self, pdf_path: str, comp_positions: dict) -> None:
+        """Load the preview widget and enable the Open Preview button."""
+        self._preview.load(pdf_path, comp_positions)
+        self._open_preview_btn.setEnabled(True)
 
     # ── Analysis ──────────────────────────────────────────────────────────
 
@@ -657,6 +679,10 @@ class MainWindow(QMainWindow):
         self._table.setRowCount(0)
         self._progress.setValue(0)
         self.statusBar().showMessage("Analyzing …")
+
+        # Release any open PDF handle BEFORE the worker tries to overwrite the file.
+        # Without this, Windows raises "Permission denied" on the second analysis run.
+        self._preview.release()
 
         config = Config(debug=self._debug_cb.isChecked())
         self._thread = QThread(self)
@@ -727,7 +753,7 @@ class MainWindow(QMainWindow):
             if comp_pos:
                 self._comp_positions = comp_pos
             if pdf_path and os.path.exists(pdf_path) and self._comp_positions:
-                self._preview.load(pdf_path, self._comp_positions)
+                self._load_preview(pdf_path, self._comp_positions)
                 self._preview.refresh(results, self._corrections)
                 self._preview.set_dnp_refs(self._dnp_refs)
 
@@ -955,20 +981,20 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_preview_edit_requested(self, ref: str) -> None:
-        """Duplakatt a preview-on → javítás párbeszéd a kijelölt komponenseknek."""
+        """Double-click on preview → open correction dialog for selected components."""
         selected = self._preview.get_selected_refs()
         if len(selected) > 1 and ref in selected:
-            # Ha több van kijelölve és a duplakattintott is köztük van → bulk
+            # Multiple selected and the double-clicked one is among them → bulk
             self._open_bulk_correction_dialog(selected)
         else:
-            # Egyedi szerkesztés
+            # Single edit
             clean = ref.rstrip(" ✎")
             row   = self._row_for_ref(clean)
             self._open_correction_dialog(row, clean)
 
     @Slot(object)
     def _on_preview_context_menu(self, global_pos) -> None:
-        """Jobb-katt a preview-on → context menu a kijelölt komponensekre."""
+        """Right-click on preview → context menu for selected components."""
         selected_refs = self._preview.get_selected_refs()
         if not selected_refs:
             return
@@ -1031,7 +1057,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"   PDF updated: {out_pdf}")
             # Reload preview with fresh render
             if self._comp_positions:
-                self._preview.load(out_pdf, self._comp_positions)
+                self._load_preview(out_pdf, self._comp_positions)
                 self._preview.refresh(self._results, self._corrections)
                 self._preview.set_dnp_refs(self._dnp_refs)
             reply = QMessageBox.question(
@@ -1049,7 +1075,7 @@ class MainWindow(QMainWindow):
             self._append_log(f"❌ Re-render failed: {exc}")
             # Re-open the old PDF if render failed (so preview stays functional)
             if self._comp_positions and os.path.exists(out_pdf):
-                self._preview.load(out_pdf, self._comp_positions)
+                self._load_preview(out_pdf, self._comp_positions)
                 self._preview.refresh(self._results, self._corrections)
         finally:
             self._rerender_btn.setEnabled(True)
@@ -1204,10 +1230,10 @@ class MainWindow(QMainWindow):
             # Auto-load PDF preview if we have all the pieces from the session
             pdf_path = self._last_out_pdf
             if pdf_path and os.path.exists(pdf_path) and self._comp_positions:
-                self._preview.load(pdf_path, self._comp_positions)
+                self._load_preview(pdf_path, self._comp_positions)
                 self._preview.refresh(results, self._corrections)
                 self._preview.set_dnp_refs(self._dnp_refs)
-                self._append_log("   🖼  PDF előnézet betöltve.")
+                self._append_log("   🖼  PDF preview loaded.")
                 self.statusBar().showMessage(
                     f"Restored {len(results)} components from JSON  "
                     f"({n_marked} marked)  —  PDF preview loaded."

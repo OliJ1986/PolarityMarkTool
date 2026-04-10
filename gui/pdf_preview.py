@@ -22,12 +22,26 @@ Features
 • Wheel             → scroll vertically
 • Shift + Wheel     → scroll horizontally
 • "Fit" button      → fit page width to panel
-• "Jelölők" checkbox → optional coloured-dot overlay on top of the PDF:
+• "Markers" checkbox → optional coloured-dot overlay on top of the PDF:
     green  = marked
     red    = unmarked
     amber  = ambiguous
     blue   = corrected (manual)
   When unchecked the view shows the PDF without any Python-drawn additions.
+
+Page navigation
+---------------
+• TOP / BOT buttons switch between the two rendered pages (top-side and
+  bottom-side of the PCB).  The buttons are hidden when the document has
+  only one page.
+• comp_positions entries may be 2-tuples (pdf_x, pdf_y) for single-page
+  documents, or 3-tuples (page_idx, pdf_x, pdf_y) for two-page ODB++ renders.
+  Both formats are handled transparently.
+
+Floating preview window
+-----------------------
+Use ``PreviewDialog`` to host the widget in a separate, resizable, fullscreen-
+capable window.  Press F11 or click the fullscreen button to toggle.
 """
 from __future__ import annotations
 
@@ -214,7 +228,9 @@ class _Canvas(QLabel):
             return
         scale = self._pv._pix_scale
         found: Set[str] = set()
-        for ref, (pdf_x, pdf_y) in self._pv._comp_pos.items():
+        for ref, pidx, pdf_x, pdf_y in self._pv._comp_pos_iter():
+            if pidx != self._pv._page_idx:
+                continue
             if rect.contains(int(pdf_x * scale), int(pdf_y * scale)):
                 found.add(ref)
         if found:
@@ -268,7 +284,14 @@ class PDFPreviewWidget(QWidget):
     load(pdf_path, comp_positions)      – open PDF + set component positions
     refresh(results, corrections, ...)  – update overlay data, repaint
     select(ref)                         – highlight a component
+    go_to_page(page_idx)                – switch between TOP (0) and BOT (1) page
     clear()                             – reset to placeholder state
+
+    comp_positions format
+    ---------------------
+    Accepts both:
+      • {ref: (pdf_x, pdf_y)}              – single-page / legacy
+      • {ref: (page_idx, pdf_x, pdf_y)}    – two-page ODB++ render
     """
 
     component_clicked               = Signal(str)    # short click on a component
@@ -283,9 +306,10 @@ class PDFPreviewWidget(QWidget):
         self._zoom:         float                           = 1.0
         self._fit_zoom:     float                           = 1.0
         self._pix_scale:    float                           = 1.0   # pixels / PDF pt
+        self._page_idx:     int                             = 0     # 0=TOP, 1=BOT
 
         # Data for overlay / hit-testing
-        self._comp_pos:     Dict[str, Tuple[float, float]]  = {}    # ref → (pdf_x, pdf_y)
+        self._comp_pos:     dict                            = {}    # ref → (page_idx, pdf_x, pdf_y) or (pdf_x, pdf_y)
         self._results:      list                            = []
         self._corrections:  dict                            = {}
         self._dnp_refs:     Set[str]                        = set()
@@ -324,22 +348,41 @@ class PDFPreviewWidget(QWidget):
         self._btn_in.clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
         self._btn_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
         self._btn_fit.clicked.connect(self._fit_to_width)
-        self._btn_fit.setToolTip("Igazítás a szélességhez  (Ctrl+0)")
+        self._btn_fit.setToolTip("Fit to width")
 
-        self._overlay_cb = QCheckBox("Jelölők")
+        # ── Page selector (TOP / BOT) ─────────────────────────────────────
+        self._btn_top = QPushButton("▲ TOP")
+        self._btn_top.setFixedSize(58, 22)
+        self._btn_top.setCheckable(True)
+        self._btn_top.setChecked(True)
+        self._btn_top.setToolTip("Top side of the PCB")
+        self._btn_top.clicked.connect(lambda: self.go_to_page(0))
+
+        self._btn_bot = QPushButton("▼ BOT")
+        self._btn_bot.setFixedSize(58, 22)
+        self._btn_bot.setCheckable(True)
+        self._btn_bot.setChecked(False)
+        self._btn_bot.setToolTip("Bottom side of the PCB")
+        self._btn_bot.clicked.connect(lambda: self.go_to_page(1))
+
+        # Initially hidden; shown when a 2-page PDF is loaded
+        self._btn_top.hide()
+        self._btn_bot.hide()
+
+        self._overlay_cb = QCheckBox("Markers")
         self._overlay_cb.setChecked(False)
         self._overlay_cb.setToolTip(
-            "Színes státusz-pontok az alkatrészeken\n"
-            "  zöld  = jelölt\n"
-            "  piros = jelöletlen\n"
-            "  kék   = manuálisan javított\n"
-            "Ha ki van kapcsolva, csak a PDF látszik."
+            "Coloured status dots on components:\n"
+            "  green  = marked\n"
+            "  red    = unmarked\n"
+            "  blue   = manually corrected\n"
+            "When unchecked only the rendered PDF is shown."
         )
         self._overlay_cb.toggled.connect(self._on_overlay_toggled)
 
         self._hint_lbl = QLabel(
-            "🖐 Húzás = görgetés  │  Ctrl+Húzás = területkijelölés  │"
-            "  Katt = kijelölés  │  Ctrl+Katt = toggle  │  Duplakatt = szerkesztés"
+            "🖐 Drag = pan  │  Ctrl+Drag = area select  │"
+            "  Click = select  │  Ctrl+Click = toggle  │  Right-click = edit selected"
             "  │  Ctrl+Scroll = zoom"
         )
         self._hint_lbl.setStyleSheet("color: #777; font-size: 8px;")
@@ -348,6 +391,9 @@ class PDFPreviewWidget(QWidget):
         tb.addWidget(self._btn_in)
         tb.addWidget(self._zoom_lbl)
         tb.addWidget(self._btn_fit)
+        tb.addSpacing(6)
+        tb.addWidget(self._btn_top)
+        tb.addWidget(self._btn_bot)
         tb.addSpacing(10)
         tb.addWidget(self._overlay_cb)
         tb.addSpacing(10)
@@ -372,9 +418,9 @@ class PDFPreviewWidget(QWidget):
 
         # ── Placeholder shown before any PDF is loaded ────────────────────
         self._placeholder = QLabel(
-            "A PDF előnézet itt jelenik meg az elemzés után.\n\n"
-            "🖐 Bal egérgombbal húzhatod a képet.\n"
-            "Ctrl+Scroll = zoom  │  Duplakatt = javítás"
+            "The PDF preview will appear here after analysis.\n\n"
+            "🖐 Left-drag to pan  │  Right-click = edit selected\n"
+            "Ctrl+Scroll = zoom  │  Ctrl+Drag = area select"
         )
         self._placeholder.setAlignment(Qt.AlignCenter)
         self._placeholder.setStyleSheet(
@@ -392,7 +438,7 @@ class PDFPreviewWidget(QWidget):
     def load(
         self,
         pdf_path: str,
-        comp_positions: Dict[str, Tuple[float, float]],
+        comp_positions: dict,
     ) -> None:
         """
         Open *pdf_path* with PyMuPDF and store *comp_positions* for
@@ -401,7 +447,7 @@ class PDFPreviewWidget(QWidget):
         Parameters
         ----------
         pdf_path       : path to the rendered polarity PDF
-        comp_positions : {ref: (pdf_x, pdf_y)} in PDF-point coordinates
+        comp_positions : {ref: (pdf_x, pdf_y)} or {ref: (page_idx, pdf_x, pdf_y)}
         """
         if self._doc:
             self._doc.close()
@@ -411,12 +457,23 @@ class PDFPreviewWidget(QWidget):
         try:
             self._doc = fitz.open(pdf_path)
         except Exception as exc:
-            self._placeholder.setText(f"⚠️  PDF betöltési hiba:\n{exc}")
+            self._placeholder.setText(f"⚠️  PDF load error:\n{exc}")
             self._placeholder.show()
             self._scroll.hide()
             return
 
         self._comp_pos = comp_positions or {}
+
+        # Show / hide page navigation buttons based on page count
+        n_pages = len(self._doc)
+        if n_pages >= 2:
+            self._btn_top.show()
+            self._btn_bot.show()
+        else:
+            self._btn_top.hide()
+            self._btn_bot.hide()
+            self._page_idx = 0
+
         self._placeholder.hide()
         self._scroll.show()
         self._fit_to_width()
@@ -456,9 +513,33 @@ class PDFPreviewWidget(QWidget):
         return sorted(self._selected_refs)
 
     def set_dnp_refs(self, refs: set) -> None:
-        """Set the DNP (Do-Not-Place / nem beültetett) ref set and repaint."""
+        """Set the DNP (Do-Not-Place) ref set and repaint."""
         self._dnp_refs = {r.strip().upper() for r in refs} if refs else set()
         self._repaint()
+
+    def go_to_page(self, page_idx: int) -> None:
+        """Switch to the given page index (0 = TOP, 1 = BOT)."""
+        if not self._doc:
+            return
+        page_idx = max(0, min(page_idx, len(self._doc) - 1))
+        if page_idx == self._page_idx:
+            # Still update the button checked states
+            self._update_page_buttons()
+            return
+        self._page_idx = page_idx
+        self._base_pix = None   # invalidate cached pixmap
+        self._update_page_buttons()
+        self._repaint()
+
+    def _update_page_buttons(self) -> None:
+        """Sync the TOP/BOT button checked states with self._page_idx."""
+        # Block signals to avoid recursive calls
+        self._btn_top.blockSignals(True)
+        self._btn_bot.blockSignals(True)
+        self._btn_top.setChecked(self._page_idx == 0)
+        self._btn_bot.setChecked(self._page_idx == 1)
+        self._btn_top.blockSignals(False)
+        self._btn_bot.blockSignals(False)
 
     def release(self) -> None:
         """
@@ -483,23 +564,46 @@ class PDFPreviewWidget(QWidget):
         self._corrections   = {}
         self._dnp_refs      = set()
         self._selected_refs = set()
+        self._page_idx      = 0
+        self._btn_top.hide()
+        self._btn_bot.hide()
         self._scroll.hide()
         self._placeholder.setText(
-            "A PDF előnézet itt jelenik meg az elemzés után.\n\n"
-            "🖐 Bal egérgombbal húzhatod a képet.\n"
-            "Ctrl+Scroll = zoom  │  Duplakatt = javítás"
+            "The PDF preview will appear here after analysis.\n\n"
+            "🖐 Left-drag to pan  │  Right-click = edit selected\n"
+            "Ctrl+Scroll = zoom  │  Ctrl+Drag = area select"
         )
         self._placeholder.show()
+
+    # ═════════════════════════════════════════════════════════════════════
+    # comp_pos helpers
+    # ═════════════════════════════════════════════════════════════════════
+
+    def _comp_pos_iter(self):
+        """Yield ``(ref, page_idx, pdf_x, pdf_y)`` for every stored position.
+
+        Handles both legacy 2-tuples ``(pdf_x, pdf_y)`` (assumed page 0) and
+        the current 3-tuple ``(page_idx, pdf_x, pdf_y)`` format.
+        """
+        for ref, pos in self._comp_pos.items():
+            try:
+                if len(pos) == 3:
+                    yield ref, int(pos[0]), float(pos[1]), float(pos[2])
+                else:
+                    yield ref, 0, float(pos[0]), float(pos[1])
+            except (TypeError, ValueError):
+                continue
 
     # ═════════════════════════════════════════════════════════════════════
     # Rendering
     # ═════════════════════════════════════════════════════════════════════
 
     def _render_base(self) -> None:
-        """Rasterise PDF page 0 at the current zoom level → self._base_pix."""
+        """Rasterise the current PDF page at the current zoom level → self._base_pix."""
         if not self._doc:
             return
-        page = self._doc[0]
+        page_idx = max(0, min(self._page_idx, len(self._doc) - 1))
+        page = self._doc[page_idx]
         dpi  = 96.0 * self._zoom
         mat  = fitz.Matrix(dpi / 72.0, dpi / 72.0)
         pix  = page.get_pixmap(matrix=mat, alpha=False)
@@ -553,12 +657,12 @@ class PDFPreviewWidget(QWidget):
         r     = max(4.5, _DOT_R_BASE * min(self._zoom, 2.5))
 
         # ── DNP markers (drawn first / bottom layer) ──────────────────────
-        # Orange semi-transparent filled ellipse + orange ring + "DNP" text.
-        # Always visible regardless of the "Jelölők" overlay checkbox.
         if self._dnp_refs:
             dnp_r    = r * 1.1
-            dnp_fill = QColor(255, 140, 0, 110)  # semi-transparent orange, no border
-            for ref, (pdf_x, pdf_y) in self._comp_pos.items():
+            dnp_fill = QColor(255, 140, 0, 110)
+            for ref, pidx, pdf_x, pdf_y in self._comp_pos_iter():
+                if pidx != self._page_idx:
+                    continue
                 if ref.upper() not in self._dnp_refs:
                     continue
                 sx, sy = pdf_x * scale, pdf_y * scale
@@ -581,7 +685,9 @@ class PDFPreviewWidget(QWidget):
         font = QFont("Arial", max(6, int(7 * min(self._zoom, 2.5))))
         p.setFont(font)
 
-        for ref, (pdf_x, pdf_y) in self._comp_pos.items():
+        for ref, pidx, pdf_x, pdf_y in self._comp_pos_iter():
+            if pidx != self._page_idx:
+                continue
             status  = status_map.get(ref)
             is_sel  = ref in self._selected_refs
             is_corr = ref in self._corrections
@@ -597,7 +703,7 @@ class PDFPreviewWidget(QWidget):
                     int(2 * ring_r),  int(2 * ring_r),
                 )
 
-            # Coloured status dot — only when "Jelölők" overlay is active
+            # Coloured status dot — only when "Markers" overlay is active
             if self._show_overlay and status is not None:
                 col  = _DOT_COLOR.get(status, QColor(140, 140, 140))
                 fill = QColor(col)
@@ -613,7 +719,7 @@ class PDFPreviewWidget(QWidget):
                     p.setPen(QPen(QColor(255, 255, 255)))
                     p.drawText(int(sx + r + 2), int(sy + 4), ref)
 
-            # Correction badge — always visible even without "Jelölők" overlay.
+            # Correction badge — always visible even without "Markers" overlay.
             # Draws a blue outlined ring + "✎" so the user knows which
             # components have a manual correction waiting for re-render.
             elif is_corr:
@@ -635,8 +741,8 @@ class PDFPreviewWidget(QWidget):
     def _hit(self, cx: int, cy: int) -> Optional[str]:
         """
         Return the ref of the component whose dot is closest to canvas
-        pixel (*cx*, *cy*), or None if none is within the hit radius.
-        Works regardless of whether the overlay is visible.
+        pixel (*cx*, *cy*) on the **current page**, or None if none is
+        within the hit radius.
         """
         if not self._comp_pos:
             return None
@@ -645,7 +751,9 @@ class PDFPreviewWidget(QWidget):
         thresh = (r + 8) ** 2
         best_ref: Optional[str] = None
         best_d  = thresh
-        for ref, (pdf_x, pdf_y) in self._comp_pos.items():
+        for ref, pidx, pdf_x, pdf_y in self._comp_pos_iter():
+            if pidx != self._page_idx:
+                continue
             sx, sy = pdf_x * scale, pdf_y * scale
             d = (cx - sx) ** 2 + (cy - sy) ** 2
             if d < best_d:
@@ -704,7 +812,8 @@ class PDFPreviewWidget(QWidget):
         if not self._doc:
             return
         avail = max(150, self._scroll.viewport().width() - 4)
-        pt_w  = self._doc[0].rect.width
+        page_idx = max(0, min(self._page_idx, len(self._doc) - 1))
+        pt_w  = self._doc[page_idx].rect.width
         zoom  = avail / (pt_w * 96.0 / 72.0)
         self._fit_zoom = zoom
         self._set_zoom(zoom)
@@ -760,3 +869,75 @@ class PDFPreviewWidget(QWidget):
             )
 
         ev.accept()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Floating preview window
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PreviewDialog(QWidget):
+    """
+    Standalone floating window that hosts a ``PDFPreviewWidget``.
+
+    • Appears as an independent window in the taskbar (``Qt.Window`` flag).
+    • Press **F11** or click "⛶ Fullscreen" to toggle fullscreen.
+    • Press **Escape** to exit fullscreen.
+    • Closing the window only *hides* it (the widget is not destroyed).
+    • The ``PDFPreviewWidget`` signals (component_clicked etc.) pass through
+      unchanged, because the widget instance is shared with the caller.
+    """
+
+    def __init__(
+        self,
+        preview_widget: PDFPreviewWidget,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle("PolarityMark – PDF Preview")
+        self.setMinimumSize(640, 460)
+        self.resize(1000, 720)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ── Thin header bar with fullscreen button ────────────────────────
+        hdr = QHBoxLayout()
+        hdr.setContentsMargins(6, 3, 6, 3)
+
+        self._fs_btn = QPushButton("⛶  Fullscreen  (F11)")
+        self._fs_btn.setFixedHeight(24)
+        self._fs_btn.setToolTip("Toggle fullscreen  (F11)")
+        self._fs_btn.clicked.connect(self._toggle_fullscreen)
+
+        hdr.addStretch()
+        hdr.addWidget(self._fs_btn)
+        layout.addLayout(hdr)
+
+        # ── The actual preview widget ─────────────────────────────────────
+        layout.addWidget(preview_widget, 1)
+        self._preview = preview_widget
+
+    # ── Fullscreen helpers ────────────────────────────────────────────────
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+            self._fs_btn.setText("⛶  Fullscreen  (F11)")
+        else:
+            self.showFullScreen()
+            self._fs_btn.setText("⊡  Windowed  (F11 / Esc)")
+
+    def keyPressEvent(self, ev) -> None:
+        if ev.key() == Qt.Key_F11:
+            self._toggle_fullscreen()
+        elif ev.key() == Qt.Key_Escape and self.isFullScreen():
+            self.showNormal()
+            self._fs_btn.setText("⛶  Fullscreen  (F11)")
+        else:
+            super().keyPressEvent(ev)
+
+    def closeEvent(self, ev) -> None:
+        """Hide instead of destroy when the user presses the window close button."""
+        ev.ignore()
+        self.hide()
+

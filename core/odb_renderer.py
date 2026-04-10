@@ -37,6 +37,10 @@ _ROLE_COLORS = {
     "fab_top":       (0.20, 0.20, 0.72),
     "courtyard_top": (0.0,  0.55, 0.55),
     "notes_top":     (0.35, 0.35, 0.35),
+    "copper_bot":    (0.80, 0.35, 0.10),
+    "silk_bot":      (0.65, 0.10, 0.10),
+    "fab_bot":       (0.10, 0.45, 0.20),
+    "courtyard_bot": (0.15, 0.50, 0.30),
     "profile":       (0.0,  0.0,  0.0),
 }
 _HIGHLIGHT_GREEN  = (0.20, 0.95, 0.08)   # bright green highlighter
@@ -151,19 +155,45 @@ def _discover_layers(mls: List[_MatrixLayer]) -> Dict[str, str]:
         for ml in mls:
             if all(k in ml.name for k in kws): return ml.name
         return None
-    r: Dict[str,str] = {}
-    r["copper_top"] = (_find("f.cu") or _find("layer_1","top") or
-        next((ml.name for ml in mls if "layer" in ml.name and "top" in ml.name
-              and "assembly" not in ml.name and "silk" not in ml.name),None))
+
+    # Keywords that mark a DOCUMENT layer as non-assembly (keepout, milling, etc.)
+    # These should never be used as a fab/assembly layer fallback.
+    # Note: "3d-body" is handled explicitly below, so "3d" is NOT in this list.
+    _NON_FAB = ("keep", "mill", "drill", "paste", "mask", "solder",
+                "courtyard", "wiring", "outline", "board")
+
+    r: Dict[str, str] = {}
+
+    # ── Top layers ────────────────────────────────────────────────────────────
+    r["copper_top"] = (
+        _find("f.cu") or _find("layer_1", "top") or _find("top_layer")
+        or next((ml.name for ml in mls
+                 if ml.layer_type in ("SIGNAL", "POWER")
+                 and "top" in ml.name and "bot" not in ml.name), None)
+        or next((ml.name for ml in mls
+                 if "layer" in ml.name and "top" in ml.name
+                 and "assembly" not in ml.name and "silk" not in ml.name
+                 and "overlay" not in ml.name), None)
+    )
     silk = next((ml.name for ml in mls if "silk" in ml.name and "top" in ml.name
-                 and "bot" not in ml.name),None)
-    r["silk_top"] = silk or _find("f.silk") or next(
-        (ml.name for ml in mls if ml.layer_type=="SILK_SCREEN"
-         and "mask" not in ml.name and "bot" not in ml.name),None)
-    r["fab_top"] = _find("f.fab") or _find("assembly","top")
+                 and "bot" not in ml.name), None)
+    r["silk_top"] = (
+        silk or _find("f.silk") or _find("overlay", "top") or _find("top_overlay")
+        or next((ml.name for ml in mls if ml.layer_type == "SILK_SCREEN"
+                 and "mask" not in ml.name and "bot" not in ml.name), None)
+    )
+    r["fab_top"] = (
+        _find("f.fab") or _find("assembly", "top") or _find("assemt")
+        or _find("top_assembly") or _find("fab", "top")
+        or _find("3d-body")          # Altium ODB++: single layer with all component body outlines
+        or next((ml.name for ml in mls
+                 if ml.layer_type == "DOCUMENT"
+                 and "bot" not in ml.name and not ml.name.endswith("b")
+                 and not any(k in ml.name for k in _NON_FAB)), None)
+    )
     court = _find("f.courtyard") or next(
         (ml.name for ml in mls if "courtyard" in ml.name
-         and "bot" not in ml.name and "b." not in ml.name),None)
+         and "bot" not in ml.name and "b." not in ml.name), None)
     r["courtyard_top"] = court
     notes = (
         _find("f.user") or _find("user", "drawing") or _find("dwgs", "user")
@@ -173,12 +203,54 @@ def _discover_layers(mls: List[_MatrixLayer]) -> Dict[str, str]:
                  and "bot" not in ml.name and "b." not in ml.name), None)
     )
     r["notes_top"] = notes
-    return {k:v for k,v in r.items() if v}
+
+    # ── Bottom layers ─────────────────────────────────────────────────────────
+    r["copper_bot"] = (
+        _find("b.cu") or _find("layer_2", "bot") or _find("bottom_layer")
+        or next((ml.name for ml in mls
+                 if ml.layer_type in ("SIGNAL", "POWER")
+                 and "bot" in ml.name), None)
+        or next((ml.name for ml in mls
+                 if "layer" in ml.name and "bot" in ml.name
+                 and "assembly" not in ml.name and "silk" not in ml.name
+                 and "overlay" not in ml.name), None)
+    )
+    silk_b = next((ml.name for ml in mls if "silk" in ml.name and "bot" in ml.name), None)
+    r["silk_bot"] = (
+        silk_b or _find("b.silk") or _find("overlay", "bot") or _find("bottom_overlay")
+        or next((ml.name for ml in mls if ml.layer_type == "SILK_SCREEN"
+                 and "mask" not in ml.name and "bot" in ml.name), None)
+    )
+    r["fab_bot"] = (
+        _find("b.fab") or _find("assembly", "bot") or _find("assemb")
+        or _find("bottom_assembly") or _find("fab", "bot")
+        or _find("3d-body")          # Altium ODB++: single layer with all component body outlines
+        or next((ml.name for ml in mls
+                 if ml.layer_type == "DOCUMENT"
+                 and ("bot" in ml.name or ml.name.endswith("b"))
+                 and not any(k in ml.name for k in _NON_FAB)), None)
+    )
+    court_b = _find("b.courtyard") or next(
+        (ml.name for ml in mls if "courtyard" in ml.name and "bot" in ml.name), None)
+    r["courtyard_bot"] = court_b
+
+    return {k: v for k, v in r.items() if v}
 
 def _detect_units(content: str) -> str:
+    """Return ``'INCH'`` or ``'MM'`` from an ODB++ file header.
+
+    Handles both formats:
+      • ``UNITS=INCH`` / ``UNITS=MM``   (KiCad / old-style)
+      • ``U INCH`` / ``U MM``           (ODB++ features / profile files)
+    """
     for ln in content.splitlines()[:20]:
-        s=ln.strip().upper()
-        if s.startswith("UNITS"): return "INCH" if "INCH" in s else "MM"
+        s = ln.strip().upper()
+        if s.startswith("UNITS"):
+            return "INCH" if "INCH" in s else "MM"
+        # ODB++ features format: "U MM" or "U INCH"
+        m = re.match(r'^U\s+(MM|INCH)', s)
+        if m:
+            return m.group(1)
     return "MM"
 
 def _parse_profile(content: str) -> List[Tuple[float,float]]:
@@ -334,33 +406,21 @@ def render_odb_to_pdf(
     capture_positions: Optional[dict] = None,
     log_fn=None,
 ) -> str:
-    """Render ODB++ → PDF with OCG layers and adaptive polarity markers.
+    # ↑ signature unchanged — only the body is replaced below
+    """Render ODB++ → two-page PDF.
 
-    ``draw_refdes`` — include Reference Designator labels as a toggleable layer.
+    Page 0 = Top side (normal orientation).
+    Page 1 = Bottom side (X-axis mirrored – view from below).
 
-    ``capture_positions`` — if a dict is passed, it is filled with
-    ``{ref: (pdf_x, pdf_y)}`` for every component (PDF pt coordinates).
-    Useful for the live preview overlay without re-parsing the archive.
-
-    ``overrides`` dict — per-component manual corrections::
-
-        {"D5": {"polar": True,  "flip_pin": False},
-         "C3": {"polar": False},
-         "IC7":{"polar": True,  "flip_pin": True}}
-
-    ``odb_comps_cache`` — already-parsed list of _ODBComponent objects; if
-    provided, the internal parse_odb_raw() call is skipped entirely.
-
-    ``log_fn`` — optional callable(str) for step-level progress logging.
+    ``capture_positions`` is filled with ``{ref: (page_idx, pdf_x, pdf_y)}``.
+    All other parameters are identical to the previous single-page version.
 
     Returns absolute path to the saved PDF.
     """
     def _log(msg: str) -> None:
         if log_fn:
-            try:
-                log_fn(msg)
-            except Exception:
-                pass
+            try: log_fn(msg)
+            except Exception: pass
 
     _log("   [render] Opening archive …")
     reader = _ArchiveReader(odb_path)
@@ -368,126 +428,159 @@ def render_odb_to_pdf(
     _log("   [render] Reading matrix & profile …")
     mc = reader.read("matrix/matrix")
     role_map = _discover_layers(_parse_matrix(mc)) if mc else {
-        "copper_top":"f.cu","silk_top":"f.silkscreen",
-        "fab_top":"f.fab","courtyard_top":"f.courtyard",
-        "notes_top":"f.user"}
+        "copper_top": "f.cu", "silk_top": "f.silkscreen",
+        "fab_top": "f.fab", "courtyard_top": "f.courtyard", "notes_top": "f.user",
+    }
 
     pc = reader.read("steps/pcb/profile")
     inch_mode = (pc is not None and _detect_units(pc) == "INCH")
-    coord_to_mm = 25.4 if inch_mode else 1.0
+    c2mm = 25.4 if inch_mode else 1.0
 
     board_outline = _parse_profile(pc) if pc else []
     if board_outline:
-        xs=[p[0]*coord_to_mm for p in board_outline]; ys=[p[1]*coord_to_mm for p in board_outline]
-        bx0,bx1,by0,by1 = min(xs),max(xs),min(ys),max(ys)
+        xs = [p[0]*c2mm for p in board_outline]
+        ys = [p[1]*c2mm for p in board_outline]
+        bx0, bx1, by0, by1 = min(xs), max(xs), min(ys), max(ys)
     else:
-        bx0,bx1,by0,by1 = 0,100,0,100
+        bx0, bx1, by0, by1 = 0, 100, 0, 100
 
-    bw = bx1-bx0+2*margin_mm; bh = by1-by0+2*margin_mm
-    pw = bw*MM_TO_PT; ph = bh*MM_TO_PT
+    bw = bx1 - bx0 + 2*margin_mm
+    bh = by1 - by0 + 2*margin_mm
+    pw = bw * MM_TO_PT
+    ph = bh * MM_TO_PT
 
-    def tx(x): return (x*coord_to_mm-bx0+margin_mm)*MM_TO_PT
-    def ty(y): return (by1-y*coord_to_mm+margin_mm)*MM_TO_PT
+    # Coordinate transforms
+    # Top page  – normal X  (profile/layer coords, uses c2mm)
+    def tx(x):   return (x*c2mm - bx0 + margin_mm) * MM_TO_PT
+    def ty(y):   return (by1 - y*c2mm + margin_mm) * MM_TO_PT
+    # Bottom page – X mirrored (viewing PCB from below)
+    def tx_b(x): return (bx1 - x*c2mm + margin_mm) * MM_TO_PT
+
+    # Component transforms – coords are ALWAYS in mm after parser normalisation
+    # (ODBParser._normalize_to_mm converts inch files to mm internally).
+    def txc(x):   return (x - bx0 + margin_mm) * MM_TO_PT
+    def tyc(y):   return (by1 - y + margin_mm) * MM_TO_PT
+    def txc_b(x): return (bx1 - x + margin_mm) * MM_TO_PT
 
     _log(f"   [render] Board {bw:.0f}×{bh:.0f} mm  →  page {pw:.0f}×{ph:.0f} pt")
 
-    doc  = fitz.open()
-    page = doc.new_page(width=pw, height=ph)
+    doc = fitz.open()
+    doc.new_page(width=pw, height=ph)   # index 0 = Top
+    doc.new_page(width=pw, height=ph)   # index 1 = Bottom
 
+    # ── OCGs shared across both pages ─────────────────────────────────────────
     ocg_outline = doc.add_ocg("Board outline",        on=True)
-    ocg_copper  = doc.add_ocg("Copper (top)",          on=draw_cu)
-    ocg_fab     = doc.add_ocg("Fab / Assembly",        on=True)
-    ocg_silk    = doc.add_ocg("Silkscreen",            on=True)
-    ocg_court   = doc.add_ocg("Courtyard",             on=draw_courtyard)
-    ocg_notes   = doc.add_ocg("Notes / User Drawing",  on=draw_notes)
-    ocg_labels  = doc.add_ocg("Reference labels",      on=draw_refdes)
-    ocg_markers = doc.add_ocg("Polarity markers",      on=True)
-    ocg_dnp     = doc.add_ocg("DNP (Not Placed)",      on=True)
+    ocg_copper  = doc.add_ocg("Copper",               on=draw_cu)
+    ocg_fab     = doc.add_ocg("Fab / Assembly",       on=True)
+    ocg_silk    = doc.add_ocg("Silkscreen",           on=True)
+    ocg_court   = doc.add_ocg("Courtyard",            on=draw_courtyard)
+    ocg_notes   = doc.add_ocg("Notes / User Drawing", on=draw_notes)
+    ocg_labels  = doc.add_ocg("Reference labels",     on=draw_refdes)
+    ocg_markers = doc.add_ocg("Polarity markers",     on=True)
+    ocg_dnp     = doc.add_ocg("DNP (Not Placed)",     on=True)
 
-    # Board outline — batch into a single shape
+    # ── Page title labels ─────────────────────────────────────────────────────
+    title_fs = max(5.0, min(8.0, bw / 20))
+    for pi, title in [(0, "TOP SIDE"), (1, "BOTTOM SIDE (mirrored)")]:
+        try:
+            doc[pi].insert_text(
+                fitz.Point(margin_mm * MM_TO_PT, margin_mm * 0.65 * MM_TO_PT),
+                title, fontsize=title_fs, color=(0.35, 0.35, 0.35), fontname="helv",
+            )
+        except Exception:
+            pass
+
+    # ── Board outline on both pages ───────────────────────────────────────────
     _log(f"   [render] Drawing board outline ({len(board_outline)} pts) …")
     if len(board_outline) >= 2:
-        outline_shape = page.new_shape()
-        for i in range(len(board_outline) - 1):
-            outline_shape.draw_line(
-                fitz.Point(tx(board_outline[i][0]),   ty(board_outline[i][1])),
-                fitz.Point(tx(board_outline[i+1][0]), ty(board_outline[i+1][1])),
-            )
-        outline_shape.finish(color=_ROLE_COLORS["profile"], width=0.8, oc=ocg_outline)
-        outline_shape.commit()
+        for pi, tfx in [(0, tx), (1, tx_b)]:
+            s = doc[pi].new_shape()
+            for i in range(len(board_outline) - 1):
+                s.draw_line(
+                    fitz.Point(tfx(board_outline[i][0]),   ty(board_outline[i][1])),
+                    fitz.Point(tfx(board_outline[i+1][0]), ty(board_outline[i+1][1])),
+                )
+            s.finish(color=_ROLE_COLORS["profile"], width=0.8, oc=ocg_outline)
+            s.commit()
 
-    # PCB layers
-    plan = []
-    if draw_cu and "copper_top" in role_map:
-        plan.append(("copper_top",role_map["copper_top"],ocg_copper))
-    if draw_courtyard and "courtyard_top" in role_map:
-        plan.append(("courtyard_top",role_map["courtyard_top"],ocg_court))
-    if draw_fab and "fab_top" in role_map:
-        plan.append(("fab_top",role_map["fab_top"],ocg_fab))
-    if draw_silk and "silk_top" in role_map:
-        plan.append(("silk_top",role_map["silk_top"],ocg_silk))
+    # ── PCB layer rendering plan ──────────────────────────────────────────────
+    # Each entry: (role_key, layer_folder, ocg, page_index, tfx)
+    plan: list = []
+    if draw_cu:
+        if "copper_top" in role_map:
+            plan.append(("copper_top", role_map["copper_top"], ocg_copper, 0, tx))
+        if "copper_bot" in role_map:
+            plan.append(("copper_bot", role_map["copper_bot"], ocg_copper, 1, tx_b))
+    if draw_courtyard:
+        if "courtyard_top" in role_map:
+            plan.append(("courtyard_top", role_map["courtyard_top"], ocg_court, 0, tx))
+        if "courtyard_bot" in role_map:
+            plan.append(("courtyard_bot", role_map["courtyard_bot"], ocg_court, 1, tx_b))
+    if draw_fab:
+        if "fab_top" in role_map:
+            plan.append(("fab_top", role_map["fab_top"], ocg_fab, 0, tx))
+        if "fab_bot" in role_map:
+            plan.append(("fab_bot", role_map["fab_bot"], ocg_fab, 1, tx_b))
+    if draw_silk:
+        if "silk_top" in role_map:
+            plan.append(("silk_top", role_map["silk_top"], ocg_silk, 0, tx))
+        if "silk_bot" in role_map:
+            plan.append(("silk_bot", role_map["silk_bot"], ocg_silk, 1, tx_b))
     if draw_notes and "notes_top" in role_map:
-        plan.append(("notes_top", role_map["notes_top"], ocg_notes))
+        plan.append(("notes_top", role_map["notes_top"], ocg_notes, 0, tx))
 
-    for role, folder, ocg in plan:
+    for role, folder, ocg, pi, tfx in plan:
         _log(f"   [render] Reading layer '{folder}' …")
         cnt = reader.read(f"steps/pcb/layers/{folder}/features")
         if not cnt:
-            _log(f"   [render]   (not found, skipped)")
+            _log("   [render]   (not found, skipped)")
             continue
         color = _ROLE_COLORS.get(role, (0.4, 0.4, 0.4))
         syms, fl_lines, fl_pads, fl_arcs = _parse_features(cnt)
         _log(f"   [render]   {role}: {len(fl_lines)} lines, "
              f"{len(fl_pads)} pads, {len(fl_arcs)} arcs → drawing …")
 
-        if role == "copper_top":
-            # All pads in a single Shape → one fill operation
-            shape = page.new_shape()
+        if role in ("copper_top", "copper_bot"):
+            shape = doc[pi].new_shape()
             for fp in fl_pads:
                 sym = syms.get(fp.sym_idx)
-                if not sym:
-                    continue
-                cx_, cy_ = tx(fp.x), ty(fp.y)
+                if not sym: continue
+                cx_, cy_ = tfx(fp.x), ty(fp.y)
                 if sym.is_round:
                     r = max(0.3, sym.w_mm(inch_mode) * MM_TO_PT / 2)
                     shape.draw_circle(fitz.Point(cx_, cy_), r)
                 elif sym.is_rect:
                     w = max(0.3, sym.w_mm(inch_mode) * MM_TO_PT)
                     h = max(0.3, sym.h_mm(inch_mode) * MM_TO_PT)
-                    shape.draw_rect(fitz.Rect(cx_ - w/2, cy_ - h/2,
-                                              cx_ + w/2, cy_ + h/2))
+                    shape.draw_rect(fitz.Rect(cx_ - w/2, cy_ - h/2, cx_ + w/2, cy_ + h/2))
             shape.finish(color=color, fill=color, width=0, oc=ocg)
             shape.commit()
-            _log(f"   [render]   copper done.")
+            _log("   [render]   copper done.")
             continue
 
-        # Lines: group by stroke width → one shape.finish() per width bucket
-        # instead of one page.draw_line() per line.  Reduces 7000+ PDF ops to ~5.
+
         width_groups: Dict[float, list] = {}
         for fl in fl_lines:
             sym = syms.get(fl.sym_idx)
             lw = round(
-                max(0.15, min((sym.w_mm(inch_mode) * MM_TO_PT) if sym else 0.3, 1.5)),
-                3,
-            )
+                max(0.15, min((sym.w_mm(inch_mode) * MM_TO_PT) if sym else 0.3, 1.5)), 3)
             width_groups.setdefault(lw, []).append(fl)
 
-        shape = page.new_shape()
+        shape = doc[pi].new_shape()
         for lw, group in width_groups.items():
             for fl in group:
                 shape.draw_line(
-                    fitz.Point(tx(fl.x1), ty(fl.y1)),
-                    fitz.Point(tx(fl.x2), ty(fl.y2)),
+                    fitz.Point(tfx(fl.x1), ty(fl.y1)),
+                    fitz.Point(tfx(fl.x2), ty(fl.y2)),
                 )
             shape.finish(color=color, width=lw, oc=ocg)
 
-        # Arcs: polyline approximation, all in the same shape
         if fl_arcs:
             for arc in fl_arcs:
                 for i in range(len(arc.points) - 1):
                     shape.draw_line(
-                        fitz.Point(tx(arc.points[i][0]),   ty(arc.points[i][1])),
-                        fitz.Point(tx(arc.points[i+1][0]), ty(arc.points[i+1][1])),
+                        fitz.Point(tfx(arc.points[i][0]),   ty(arc.points[i][1])),
+                        fitz.Point(tfx(arc.points[i+1][0]), ty(arc.points[i+1][1])),
                     )
             shape.finish(color=color, width=0.3, oc=ocg)
 
@@ -495,7 +588,7 @@ def render_odb_to_pdf(
         _log(f"   [render]   {role} done "
              f"({len(width_groups)} width group(s), {len(fl_arcs)} arc(s)).")
 
-    # Component data — use cache if provided to avoid re-reading the archive
+    # ── Component data ────────────────────────────────────────────────────────
     if odb_comps_cache is not None:
         odb_comps = odb_comps_cache
         _log(f"   [render] Using {len(odb_comps)} pre-parsed components.")
@@ -509,166 +602,169 @@ def render_odb_to_pdf(
             _log(f"   [render]   Parse failed: {exc}")
             odb_comps = []
 
-    # Capture component PDF coordinates for the live preview overlay
+    top_comps = [c for c in odb_comps if c.side == "top"]
+    bot_comps = [c for c in odb_comps if c.side != "top"]
+    _log(f"   [render] Components: {len(top_comps)} top, {len(bot_comps)} bottom.")
+
+    # Capture PDF coordinates: {ref: (page_idx, pdf_x, pdf_y)}
     if capture_positions is not None:
-        for oc in odb_comps:
-            capture_positions[oc.ref] = (tx(oc.x), ty(oc.y))
+        for oc in top_comps:
+            capture_positions[oc.ref] = (0, txc(oc.x), tyc(oc.y))
+        for oc in bot_comps:
+            capture_positions[oc.ref] = (1, txc_b(oc.x), tyc(oc.y))
 
     overrides = overrides or {}
-    font_size = max(2.8, min(4.0, bw/25))
+    dnp_set   = {r.strip().upper() for r in dnp_refs} if dnp_refs else set()
+    font_size = max(2.8, min(4.0, bw / 25))
+    base_r    = max(1.8, min(4.0, bw / 22))
 
-    n_labels = sum(1 for c in odb_comps if not c.ref.upper().startswith(("TP","FID")))
+    # comp_render_pairs: [(components, page_index, txc_fn), ...]
+    # Use the component-specific transforms (txc/txc_b) — coords are in mm.
+    comp_render_pairs = [
+        (top_comps, 0, txc),
+        (bot_comps, 1, txc_b),
+    ]
+
+    # ── Reference labels ──────────────────────────────────────────────────────
+    n_labels = sum(1 for c in odb_comps if not c.ref.upper().startswith(("TP", "FID")))
     _log(f"   [render] Drawing {n_labels} reference labels …")
-    for oc in odb_comps:
-        if oc.ref.upper().startswith(("TP","FID")): continue
-        cx_,cy_=tx(oc.x),ty(oc.y)
-        try:
-            page.insert_text(fitz.Point(cx_-font_size*0.32*len(oc.ref)/2, cy_+font_size*0.35),
-                             oc.ref, fontsize=font_size, color=(0.1,0.1,0.1),
-                             fontname="helv", oc=ocg_labels)
-        except Exception: pass
+    for comps, pi, tfx in comp_render_pairs:
+        for oc in comps:
+            if oc.ref.upper().startswith(("TP", "FID")): continue
+            cx_, cy_ = tfx(oc.x), tyc(oc.y)
+            try:
+                doc[pi].insert_text(
+                    fitz.Point(cx_ - font_size * 0.32 * len(oc.ref) / 2, cy_ + font_size * 0.35),
+                    oc.ref, fontsize=font_size, color=(0.1, 0.1, 0.1),
+                    fontname="helv", oc=ocg_labels,
+                )
+            except Exception:
+                pass
 
+    # ── Polarity markers ──────────────────────────────────────────────────────
     if mark_pin1:
-        base_r = max(1.8, min(4.0, bw/22))
-        # Normalise DNP set for fast lookup (upper-case, stripped)
-        dnp_set = {r.strip().upper() for r in dnp_refs} if dnp_refs else set()
-
-        n_polar = sum(1 for oc in odb_comps
-                      if oc.ref.upper() not in dnp_set
-                      and overrides.get(oc.ref,{}).get("polar") is not False
-                      and (oc.is_polar if overrides.get(oc.ref,{}).get("polar") is None
-                           else True))
+        n_polar = sum(
+            1 for oc in odb_comps
+            if oc.ref.upper() not in dnp_set
+            and overrides.get(oc.ref, {}).get("polar") is not False
+            and (oc.is_polar if overrides.get(oc.ref, {}).get("polar") is None else True)
+        )
         _log(f"   [render] Drawing polarity markers (~{n_polar} polar components) …")
 
-        # --- Assign shapes to components for body detection ---
+        # Best-effort: load body shapes from an existing companion PDF (top only)
+        comp_shape_dict: dict = {}
         try:
             from core.pdf_parser import PDFParser
             from core.component_shape_assign import assign_shapes_to_components
-            pdf_path = odb_path.replace(".zip", ".pdf").replace(".tgz", ".pdf")
-            if not os.path.isfile(pdf_path):
-                pdf_path = output_pdf  # fallback to output if exists
-            parser = PDFParser(pdf_path)
-            pages = parser.parse()
-            parser.close()
-            all_shapes = [s for p in pages for s in p.shapes]
-            # Dummy Component objects for assign_shapes_to_components
-            from core.component_detector import Component
-            from utils.geometry import BoundingBox, Point
-            dummy_comps = []
-            for oc in odb_comps:
-                dummy_comps.append(Component(ref=oc.ref, comp_type=oc.comp_type, bbox=BoundingBox(oc.x, oc.y, oc.x+1, oc.y+1), center=Point(oc.x, oc.y), page=0))
-            comp_shape_map = assign_shapes_to_components(dummy_comps, all_shapes, margin=2.0)
-            comp_shape_dict = {c.ref: shapes for c, shapes in comp_shape_map.items()}
+            from core.component_detector import Component as _Comp
+            from utils.geometry import BoundingBox as _BB, Point as _Pt
+            companion = odb_path.replace(".zip", ".pdf").replace(".tgz", ".pdf")
+            if os.path.isfile(companion):
+                _parser = PDFParser(companion)
+                _pages  = _parser.parse()
+                _parser.close()
+                _shapes = [s for p in _pages for s in p.shapes]
+                _dummy  = [
+                    _Comp(ref=oc.ref, comp_type=oc.comp_type,
+                          bbox=_BB(oc.x, oc.y, oc.x+1, oc.y+1),
+                          center=_Pt(oc.x, oc.y), page=0)
+                    for oc in top_comps
+                ]
+                comp_shape_dict = {
+                    c.ref: shapes
+                    for c, shapes in assign_shapes_to_components(
+                        _dummy, _shapes, margin=2.0).items()
+                }
         except Exception:
-            comp_shape_dict = {}
+            pass
 
-        for oc in odb_comps:
-            ovr = overrides.get(oc.ref, {})
-            force_polar = ovr.get("polar")
-            if force_polar is False: continue
-            # DNP components get no polarity marker
-            if oc.ref.upper() in dnp_set: continue
-            is_polar = oc.is_polar if force_polar is None else force_polar
-            if not is_polar: continue
+        for comps, pi, tfx in comp_render_pairs:
+            for oc in comps:
+                ovr         = overrides.get(oc.ref, {})
+                force_polar = ovr.get("polar")
+                if force_polar is False: continue
+                if oc.ref.upper() in dnp_set: continue
+                is_polar = oc.is_polar if force_polar is None else force_polar
+                if not is_polar: continue
 
-            if ovr.get("flip_pin"):
-                pp = oc.polarity_pin
-                if pp is not None:
-                    p2 = oc.pin2
-                    pp = oc.pin1 if (p2 and pp.number == p2.number) else (oc.pin2 or oc.pin1)
-            else:
-                pp = oc.polarity_pin
-            if pp is None: continue
+                if ovr.get("flip_pin"):
+                    pp = oc.polarity_pin
+                    if pp is not None:
+                        p2 = oc.pin2
+                        pp = oc.pin1 if (p2 and pp.number == p2.number) else (oc.pin2 or oc.pin1)
+                else:
+                    pp = oc.polarity_pin
+                if pp is None: continue
 
-            px_,py_ = tx(pp.x), ty(pp.y)
-            cx_,cy_ = tx(oc.x), ty(oc.y)
-            span_mm  = oc.pin_span_mm * coord_to_mm
-            marker_r = max(1.0, min(base_r*1.5, span_mm*0.30*MM_TO_PT)) if span_mm>0 else base_r
+                px_, py_ = tfx(pp.x), tyc(pp.y)
+                cx_, cy_ = tfx(oc.x),  tyc(oc.y)
+                # pin_span_mm is already in mm (parser normalises to mm)
+                span_mm  = oc.pin_span_mm
+                marker_r = max(1.0, min(base_r * 1.5, span_mm * 0.30 * MM_TO_PT)) if span_mm > 0 else base_r
 
-            # --- Find body shape for this component ---
-            body_shape = None
-            shapes = comp_shape_dict.get(oc.ref, [])
-            for s in shapes:
-                if s.shape_type in ("rect", "filled_rect"):
-                    body_shape = {'type': 'rect', 'bbox': s.bbox}
-                    break
-                elif s.shape_type in ("circle", "filled_circle"):
-                    cx0 = (s.bbox.x0 + s.bbox.x1) / 2.0
-                    cy0 = (s.bbox.y0 + s.bbox.y1) / 2.0
-                    rad = min(s.bbox.width, s.bbox.height) / 2.0
-                    body_shape = {'type': 'circle', 'cx': cx0, 'cy': cy0, 'r': rad}
-                    break
-                elif s.shape_type in ("polyline", "path") and len(s.points) >= 3:
-                    pts = [(p.x, p.y) for p in s.points]
-                    body_shape = {'type': 'polygon', 'points': pts}
-                    break
+                body_shape = None
+                for s in comp_shape_dict.get(oc.ref, []):
+                    if s.shape_type in ("rect", "filled_rect"):
+                        body_shape = {"type": "rect", "bbox": s.bbox}; break
+                    elif s.shape_type in ("circle", "filled_circle"):
+                        cx0 = (s.bbox.x0 + s.bbox.x1) / 2.0
+                        cy0 = (s.bbox.y0 + s.bbox.y1) / 2.0
+                        rad = min(s.bbox.width, s.bbox.height) / 2.0
+                        body_shape = {"type": "circle", "cx": cx0, "cy": cy0, "r": rad}; break
+                    elif s.shape_type in ("polyline", "path") and len(s.points) >= 3:
+                        body_shape = {"type": "polygon", "points": [(p.x, p.y) for p in s.points]}; break
 
-            _draw_polarity_marker(page, px_,py_, cx_,cy_, marker_r,
-                                  _HIGHLIGHT_GREEN,
-                                  len(oc.pins)==2, ocg_markers, body_shape)
+                _draw_polarity_marker(
+                    doc[pi], px_, py_, cx_, cy_, marker_r,
+                    _HIGHLIGHT_GREEN, len(oc.pins) == 2, ocg_markers, body_shape,
+                )
+
         _log("   [render] Polarity markers done.")
 
-    # ── DNP markers ───────────────────────────────────────────────────────
-    # Orange semi-transparent rectangle + X-cross + "DNP" label for every
-    # component whose ref is in the dnp_refs set.
+    # ── DNP markers ───────────────────────────────────────────────────────────
     if dnp_refs:
-        if not mark_pin1:
-            # dnp_set not yet built when mark_pin1 is False
-            dnp_set = {r.strip().upper() for r in dnp_refs}
         n_dnp = 0
-        for oc in odb_comps:
-            if oc.ref.upper() not in dnp_set:
-                continue
-            n_dnp += 1
-            cx_, cy_ = tx(oc.x), ty(oc.y)
-
-            # Bounding box: exact pin positions, zero padding.
-            # For linear passives the pins are collinear → one dimension is 0;
-            # expand only that dimension to the polarity-dot radius so it's visible.
-            if oc.pins:
-                xs = [tx(p.x) for p in oc.pins]
-                ys = [ty(p.y) for p in oc.pins]
-                x0, y0 = min(xs), min(ys)
-                x1, y1 = max(xs), max(ys)
-            else:
-                # No pin data: use pin-span or a default square
-                half = max(3.0, oc.pin_span_mm * coord_to_mm * MM_TO_PT * 0.5) \
-                       if oc.pin_span_mm > 0 else max(3.0, font_size * 1.5)
-                x0, y0, x1, y1 = cx_ - half, cy_ - half, cx_ + half, cy_ + half
-
-            # Ensure each dimension is at least 1× base_r so it stays visible
-            min_dim = base_r
-            if (x1 - x0) < min_dim:
-                mid = (x0 + x1) / 2
-                x0, x1 = mid - min_dim / 2, mid + min_dim / 2
-            if (y1 - y0) < min_dim:
-                mid = (y0 + y1) / 2
-                y0, y1 = mid - min_dim / 2, mid + min_dim / 2
-
-            # Semi-transparent orange fill only — no border, no text, no cross
-            fill_shape = page.new_shape()
-            fill_shape.draw_rect(fitz.Rect(x0, y0, x1, y1))
-            fill_shape.finish(
-                fill=_HIGHLIGHT_ORANGE,
-                fill_opacity=0.35, width=0, oc=ocg_dnp,
-            )
-            fill_shape.commit()
-
+        for comps, pi, tfx in comp_render_pairs:
+            for oc in comps:
+                if oc.ref.upper() not in dnp_set: continue
+                n_dnp += 1
+                cx_, cy_ = tfx(oc.x), tyc(oc.y)
+                if oc.pins:
+                    xs = [tfx(p.x) for p in oc.pins]
+                    ys = [tyc(p.y)  for p in oc.pins]
+                    x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+                else:
+                    half = (max(3.0, oc.pin_span_mm * MM_TO_PT * 0.5)
+                            if oc.pin_span_mm > 0 else max(3.0, font_size * 1.5))
+                    x0, y0, x1, y1 = cx_ - half, cy_ - half, cx_ + half, cy_ + half
+                if (x1 - x0) < base_r:
+                    mid = (x0 + x1) / 2; x0, x1 = mid - base_r/2, mid + base_r/2
+                if (y1 - y0) < base_r:
+                    mid = (y0 + y1) / 2; y0, y1 = mid - base_r/2, mid + base_r/2
+                fs = doc[pi].new_shape()
+                fs.draw_rect(fitz.Rect(x0, y0, x1, y1))
+                fs.finish(fill=_HIGHLIGHT_ORANGE, fill_opacity=0.35, width=0, oc=ocg_dnp)
+                fs.commit()
         _log(f"   [render] DNP markers done ({n_dnp} component(s)).")
 
+    # ── Save ──────────────────────────────────────────────────────────────────
     _log("   [render] Saving PDF …")
     doc.save(output_pdf, deflate=True)
     _log(f"   [render] PDF saved ({os.path.getsize(output_pdf)//1024} KB).")
 
     if save_png:
-        _log("   [render] Generating PNG preview (2× res) …")
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-        png_path = output_pdf.replace(".pdf", "_preview.png")
-        pix.save(png_path)
-        _log(f"   [render] PNG saved ({os.path.getsize(png_path)//1024} KB).")
+        _log("   [render] Generating PNG previews …")
+        for pi, suffix in [(0, "_preview.png"), (1, "_bot_preview.png")]:
+            try:
+                pix = doc[pi].get_pixmap(matrix=fitz.Matrix(2, 2))
+                pix.save(output_pdf.replace(".pdf", suffix))
+                _log(f"   [render] PNG saved: {suffix}")
+            except Exception:
+                pass
 
     doc.close()
     return os.path.abspath(output_pdf)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -682,6 +778,10 @@ class _ArchiveReader:
     sequential decompression pass during __init__.  This prevents the severe
     performance penalty of re-decompressing the gzip stream for every
     ``read()`` call (gzip streams are not efficiently seekable).
+
+    The actual ODB++ step directory (usually ``pcb`` but may be ``board`` or
+    any other name depending on the CAD tool) is auto-detected so that paths
+    like ``steps/pcb/profile`` resolve correctly regardless of the step name.
     """
 
     def __init__(self, path: str):
@@ -689,6 +789,7 @@ class _ArchiveReader:
         self._zf: Optional[zipfile.ZipFile] = None
         self._is_dir: bool = False
         self._cache: Dict[str, str] = {}   # normalised lower-case path → text
+        self._step_name: str = "pcb"       # auto-detected below
 
         low = path.lower()
         if os.path.isdir(path):
@@ -714,8 +815,50 @@ class _ArchiveReader:
         else:
             raise ValueError(f"Unsupported ODB++ path: {path}")
 
+        # Auto-detect the actual step name
+        self._step_name = self._detect_step_name()
+
+    def _detect_step_name(self) -> str:
+        """Find the step directory name (e.g. 'pcb', 'board', …)."""
+        try:
+            if self._cache:
+                names = list(self._cache.keys())
+            elif self._zf:
+                names = [n.replace("\\", "/").lower() for n in self._zf.namelist()]
+            elif self._is_dir:
+                steps_dir = os.path.join(self.path, "steps")
+                if os.path.isdir(steps_dir):
+                    for entry in os.listdir(steps_dir):
+                        if os.path.isdir(os.path.join(steps_dir, entry)):
+                            return entry.lower()
+                return "pcb"
+            else:
+                return "pcb"
+
+            for n in names:
+                idx = n.find("/steps/")
+                if idx >= 0:
+                    rest = n[idx + len("/steps/"):]
+                    if rest and "/" in rest:
+                        candidate = rest.split("/")[0]
+                        if candidate:
+                            return candidate
+                # Path starts directly with steps/ (no leading directory)
+                if n.startswith("steps/"):
+                    rest = n[len("steps/"):]
+                    if rest and "/" in rest:
+                        candidate = rest.split("/")[0]
+                        if candidate:
+                            return candidate
+        except Exception:
+            pass
+        return "pcb"
+
     def read(self, rel_path: str) -> Optional[str]:
         rn = rel_path.replace("\\", "/").lower()
+        # Substitute the actual step name when paths reference "steps/pcb/"
+        if self._step_name != "pcb":
+            rn = rn.replace("steps/pcb/", f"steps/{self._step_name}/", 1)
         try:
             if self._zf:
                 for n in self._zf.namelist():
@@ -736,7 +879,7 @@ class _ArchiveReader:
 
     def list_layer_dirs(self) -> List[str]:
         dirs: set = set()
-        prefix = "steps/pcb/layers/"
+        prefix = f"steps/{self._step_name}/layers/"
         try:
             if self._zf:
                 names = self._zf.namelist()
