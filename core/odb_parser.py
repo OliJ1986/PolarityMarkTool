@@ -66,16 +66,64 @@ class _ODBComponent:
     package: str = ""   # PKG_TYPE from PRP line (IPC-7351 footprint name)
     description: str = ""  # PRP Description value
 
-    # Set by resolve_polarity() — None means use heuristic
-    _cathode_pin_num: Optional[int] = field(default=None, repr=False)
+    # Set by resolve_polarity() or set_cathode_from_silk() — None means use heuristic
+    _cathode_pin_num:  Optional[int] = field(default=None, repr=False)
     _cathode_pin_name: Optional[str] = field(default=None, repr=False)
+    # Tracks which method was used to determine the cathode
+    # "silk" | "net_gnd" | "net_vcc" | "pin_name" | "pin1" | "fallback" | ""
+    _detection_method: str = field(default="", repr=False)
+
+    def set_cathode_from_silk(self, pin_idx: int) -> None:
+        """Set cathode from silk layer analysis.
+
+        Silk detection is skipped when more authoritative information is
+        already available:
+          • Functional pin names (K / A) are set by the component designer
+            and are never wrong.
+          • A GND-net match (net_gnd) is also very reliable.
+
+        Silk IS applied when the only other option would be fallback (pin-2
+        convention), since silk physical geometry beats a mere convention.
+        """
+        # Do not override K/A functional pin names — always correct
+        has_k = any(p.name.upper() in _CATHODE_NAMES for p in self.pins)
+        has_a = any(p.name.upper() in _ANODE_NAMES   for p in self.pins)
+        if has_k or has_a:
+            return  # pin names are unambiguous — leave them alone
+
+        # Do not override a reliable net_gnd detection
+        if self._detection_method == "net_gnd":
+            return
+
+        if 0 <= pin_idx < len(self.pins):
+            pin = self.pins[pin_idx]
+            self._cathode_pin_num  = pin.number
+            self._cathode_pin_name = pin.name
+            self._detection_method = "silk"
+
+    def _is_led_package(self) -> bool:
+        """Return True only for indicator LED / optocoupler packages.
+
+        The VCC→other-pin heuristic is reliable only for these: an LED is
+        forward-biased so cathode → VCC makes no sense.  For protection /
+        Schottky / TVS diodes the cathode is often deliberately connected to
+        a VCC rail (reverse-biased clamping), so the VCC heuristic would
+        give the wrong answer there.
+        """
+        pkg  = self.package.upper()
+        desc = self.description.upper()
+        _LED_KEYWORDS = ("LED", "CHIPLED", "INDICATOR", "OPTO",
+                         "OPTOCOUPLER", "PHOTO", "OPTOISO")
+        return any(kw in pkg or kw in desc for kw in _LED_KEYWORDS)
 
     def resolve_polarity(self, net_map: Dict[int, str]) -> None:
         """Use net names from the ODB++ netlist to find the cathode pin.
 
-        Searches each pin's net name for GND-type keywords (→ cathode) or
-        VCC-type keywords (→ anode, so the *other* pin is cathode).
-        Only applied to diodes and LEDs.
+        Pass 1 — direct GND keyword → that pin is cathode (reliable for all).
+        Pass 2 — VCC keyword → other pin is cathode, but ONLY for indicator
+                 LED / optocoupler packages.  Protection, Schottky and TVS
+                 diodes are often reverse-biased with cathode at VCC, so
+                 applying this heuristic generically gives wrong results.
         """
         if self.comp_type not in ("diode", "led"):
             return
@@ -86,19 +134,24 @@ class _ODBComponent:
         for pin in self.pins:
             nm = net_map.get(pin.net_id, "").upper()
             if any(kw in nm for kw in _GND_KEYWORDS):
-                self._cathode_pin_num = pin.number
+                self._cathode_pin_num  = pin.number
                 self._cathode_pin_name = pin.name
+                self._detection_method = "net_gnd"
                 return
 
-        # Pass 2: VCC keyword → the other pin is cathode
-        for pin in self.pins:
-            nm = net_map.get(pin.net_id, "").upper()
-            if any(kw in nm for kw in _VCC_KEYWORDS):
-                others = [p for p in self.pins if p.number != pin.number]
-                if others:
-                    self._cathode_pin_num = others[0].number
-                    self._cathode_pin_name = others[0].name
-                    return
+        # Pass 2: VCC keyword → the OTHER pin is cathode
+        # Restricted to LED/indicator packages to avoid false positives on
+        # protection diodes whose cathode intentionally connects to VCC.
+        if self._is_led_package():
+            for pin in self.pins:
+                nm = net_map.get(pin.net_id, "").upper()
+                if any(kw in nm for kw in _VCC_KEYWORDS):
+                    others = [p for p in self.pins if p.number != pin.number]
+                    if others:
+                        self._cathode_pin_num  = others[0].number
+                        self._cathode_pin_name = others[0].name
+                        self._detection_method = "net_vcc"
+                        return
 
     @property
     def pin1(self) -> Optional[_ODBPin]:
@@ -340,15 +393,32 @@ class ODBParser:
     def _load(self, path: str) -> Tuple[List[_ODBComponent], float]:
         low = path.lower()
         if os.path.isfile(path) and low.endswith(".zip"):
-            return self._from_zip(path)
+            comps, scale = self._from_zip(path)
         elif os.path.isfile(path) and (
             low.endswith(".tgz") or low.endswith(".tar.gz") or low.endswith(".tar")
         ):
-            return self._from_tgz(path)
+            comps, scale = self._from_tgz(path)
         elif os.path.isdir(path):
-            return self._from_dir(path)
+            comps, scale = self._from_dir(path)
         else:
             raise ValueError(f"Unsupported ODB++ path: {path}")
+
+        # ── Silk-layer cathode detection (priority 0 — overrides net heuristics) ──
+        # The silkscreen physically shows the cathode band, making it the most
+        # reliable source.  Runs after resolve_polarity() so it can override.
+        try:
+            from core.odb_silk_cathode import detect_cathodes
+            silk = detect_cathodes(path, comps)
+            if silk:
+                comps_by_ref = {c.ref: c for c in comps}
+                for ref, pin_idx in silk.items():
+                    c = comps_by_ref.get(ref)
+                    if c:
+                        c.set_cathode_from_silk(pin_idx)
+        except Exception:
+            pass  # silk detection failure must never block analysis
+
+        return comps, scale
 
     # ── ZIP ───────────────────────────────────────────────────────────────
 
@@ -714,19 +784,40 @@ class ODBParser:
                 p1x = p_pin.x * unit_scale
                 p1y = p_pin.y * unit_scale
                 mtype = "cathode_odb" if oc.comp_type in ("diode", "led") else "pin1_odb"
+
+                # ── Determine detection method and confidence ──────────────
+                method = oc._detection_method  # "silk"|"net_gnd"|"net_vcc"|""
+                if not method:
+                    if oc.comp_type in ("diode", "led"):
+                        # polarity_pin fell through to functional-name or fallback path
+                        has_k = any(p.name.upper() in _CATHODE_NAMES for p in oc.pins)
+                        has_a = any(p.name.upper() in _ANODE_NAMES   for p in oc.pins)
+                        method = "pin_name" if (has_k or has_a) else "fallback"
+                    else:
+                        method = "pin1"  # non-diode: pin1 is always reliable
+
+                # "fallback" = only convention-based; surface for user review
+                if method == "fallback":
+                    confidence     = 0.60
+                    polarity_status = "needs_review"
+                else:
+                    confidence     = 0.99
+                    polarity_status = "marked"
+
                 marker = PolarityMarker(
                     marker_type=mtype,
                     bbox=BoundingBox(p1x - 2, p1y - 2, p1x + 2, p1y + 2),
                     center=Point(p1x, p1y),
                     page=page_idx,
-                    confidence=0.99,
+                    confidence=confidence,
                     source="odb",
+                    detection_method=method,
                 )
                 results.append(MatchResult(
                     component=comp,
                     markers=[marker],
-                    polarity_status="marked",
-                    overall_confidence=0.99,
+                    polarity_status=polarity_status,
+                    overall_confidence=confidence,
                 ))
             else:
                 results.append(MatchResult(

@@ -75,6 +75,7 @@ class PolarityMarker:
     page: int
     confidence: float = 1.0   # 0.0 – 1.0
     source: str = "shape"     # "text" or "shape"
+    detection_method: str = ""  # "silk"|"net_gnd"|"net_vcc"|"pin_name"|"pin1"|"fallback"|""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

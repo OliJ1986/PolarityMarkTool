@@ -63,10 +63,11 @@ from PySide6.QtWidgets import (
 # ── Overlay colours ───────────────────────────────────────────────────────────
 
 _DOT_COLOR: Dict[str, QColor] = {
-    "marked":    QColor( 30, 210,  50),
-    "unmarked":  QColor(220,  50,  50),
-    "ambiguous": QColor(220, 170,   0),
-    "corrected": QColor( 60, 130, 255),
+    "marked":       QColor( 30, 210,  50),
+    "unmarked":     QColor(220,  50,  50),
+    "ambiguous":    QColor(220, 170,   0),
+    "corrected":    QColor( 60, 130, 255),
+    "needs_review": QColor(160,  80, 220),  # purple — uncertain, awaiting user review
 }
 _SEL_COLOR   = QColor(255, 220,   0)   # yellow selection ring
 _DOT_R_BASE  = 7.0                     # dot radius (px) at zoom = 1.0
@@ -373,8 +374,9 @@ class PDFPreviewWidget(QWidget):
         self._overlay_cb.setChecked(False)
         self._overlay_cb.setToolTip(
             "Coloured status dots on components:\n"
-            "  green  = marked\n"
+            "  green  = marked (high confidence)\n"
             "  red    = unmarked\n"
+            "  purple = needs review (60 % confidence — right-click to accept)\n"
             "  blue   = manually corrected\n"
             "When unchecked only the rendered PDF is shown."
         )

@@ -43,9 +43,10 @@ from gui.pdf_preview import PDFPreviewWidget, PreviewDialog
 
 COL_REF = 0; COL_TYPE = 1; COL_PAGE = 2; COL_STATUS = 3; COL_CONF = 4; COL_MARKERS = 5
 _STATUS_COLOR = {
-    "marked":    QColor(200, 255, 200),
-    "unmarked":  QColor(255, 210, 210),
-    "ambiguous": QColor(255, 235, 180),
+    "marked":       QColor(200, 255, 200),
+    "unmarked":     QColor(255, 210, 210),
+    "ambiguous":    QColor(255, 235, 180),
+    "needs_review": QColor(230, 210, 255),  # light purple — uncertain, needs user review
 }
 
 def _is_odb_path(path: str) -> bool:
@@ -243,16 +244,34 @@ class AnalysisWorker(QObject):
             if c.comp_type in ("diode", "led")
             and getattr(c, "_cathode_pin_num", None) is not None
         )
+        n_silk = sum(
+            1 for c in raw_comps
+            if getattr(c, "_detection_method", "") == "silk"
+        )
+        n_needs_review = sum(
+            1 for r in results if r.polarity_status == "needs_review"
+        )
+        if n_silk:
+            self.log.emit(f"   🔍 Cathode from silk layer: {n_silk} diode(s)/LED(s)")
         if n_net_resolved:
             self.log.emit(
                 f"   Cathode resolved via net names: {n_net_resolved} diode(s)/LED(s)"
             )
         self.log.emit(f"   Components: {len(components)}  |  Polar marked: {n_marked}")
+        if n_needs_review:
+            self.log.emit(
+                f"   ⚠️  {n_needs_review} component(s) need review "
+                "(60% confidence — right-click → Accept or Flip & Accept)"
+            )
         if n_unmarked_cap:
             self.log.emit(f"   ℹ️  {n_unmarked_cap} ceramic capacitors excluded (non-polar)")
         if self.corrections:
             self.log.emit(f"   ✎  Applying {len(self.corrections)} manual correction(s)")
-        self.log.emit(f"\n📊 Summary: {n_marked} marked (ODB++ polarity, 99% confidence)")
+        n_confirmed = n_marked - n_needs_review
+        self.log.emit(
+            f"\n📊 Summary: {n_confirmed} marked (99% confidence)"
+            + (f"  |  {n_needs_review} needs review (60% 🟣)" if n_needs_review else "")
+        )
 
         layers_on = [n for n, v in [("fab", self.draw_fab),
                                      ("silk", self.draw_silk),
@@ -842,6 +861,19 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         n = len(selected_refs)
 
+        # ── needs_review quick-accept actions ─────────────────────────────
+        nr_refs = [r for r in selected_refs if self._is_needs_review(r)]
+        if nr_refs:
+            nr_label = nr_refs[0] if len(nr_refs) == 1 else f"{len(nr_refs)} components"
+            act_accept = QAction(f"✓  Accept current pin for {nr_label}", self)
+            _nr = list(nr_refs)  # capture for lambda
+            act_accept.triggered.connect(lambda: self._quick_accept(_nr, flip=False))
+            menu.addAction(act_accept)
+            act_flip = QAction(f"↔  Flip & Accept for {nr_label}", self)
+            act_flip.triggered.connect(lambda: self._quick_accept(_nr, flip=True))
+            menu.addAction(act_flip)
+            menu.addSeparator()
+
         if n == 1:
             ref = selected_refs[0]
             row = self._row_for_ref(ref)
@@ -871,6 +903,18 @@ class MainWindow(QMainWindow):
             if item and item.text().rstrip(" ✎") == ref:
                 return row
         return -1
+
+    def _result_for_ref(self, ref: str):
+        """Return the MatchResult for *ref*, or None."""
+        for r in self._results:
+            if r.component.ref == ref:
+                return r
+        return None
+
+    def _is_needs_review(self, ref: str) -> bool:
+        """Return True if *ref* currently has 'needs_review' status."""
+        r = self._result_for_ref(ref)
+        return r is not None and r.polarity_status == "needs_review"
 
     def _open_correction_dialog(self, row: int, ref: str) -> None:
         result    = self._results[row] if 0 <= row < len(self._results) else None
@@ -934,6 +978,35 @@ class MainWindow(QMainWindow):
 
     def _clear_bulk_corrections(self, refs: list) -> None:
         self._apply_correction_to_refs(refs, {})
+
+    def _quick_accept(self, refs: list, flip: bool) -> None:
+        """One-click accept for 'needs_review' components.
+
+        Saves a correction (accepted=True, flip_pin=True/False), refreshes
+        the overlay immediately (blue ring ✎), and updates the table row to
+        show 'marked' so the user gets instant visual feedback.
+        Re-rendering the PDF bakes the final green marker.
+        """
+        correction = {"accepted": True}
+        if flip:
+            correction["flip_pin"] = True
+        self._apply_correction_to_refs(refs, correction)
+
+        # Update status in self._results so _populate_table shows "marked"
+        ref_set = set(refs)
+        for r in self._results:
+            if r.component.ref in ref_set:
+                r.polarity_status    = "marked"
+                r.overall_confidence = 0.99
+        self._populate_table(self._results)
+
+        n          = len(refs)
+        label      = refs[0] if n == 1 else f"{n} components"
+        flip_note  = " (pin flipped)" if flip else ""
+        self._append_log(
+            f"✓ Accepted{flip_note}: {label}.  "
+            "Click '🔄 Re-render' to update the PDF."
+        )
 
     # ── Selection sync (preview ↔ table) ─────────────────────────────────
 
@@ -1000,6 +1073,20 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         n    = len(selected_refs)
+
+        # ── needs_review quick-accept actions ─────────────────────────────
+        nr_refs = [r for r in selected_refs if self._is_needs_review(r)]
+        if nr_refs:
+            nr_label = nr_refs[0] if len(nr_refs) == 1 else f"{len(nr_refs)} components"
+            _nr = list(nr_refs)
+            act_accept = QAction(f"✓  Accept current pin for {nr_label}", self)
+            act_accept.triggered.connect(lambda: self._quick_accept(_nr, flip=False))
+            menu.addAction(act_accept)
+            act_flip = QAction(f"↔  Flip & Accept for {nr_label}", self)
+            act_flip.triggered.connect(lambda: self._quick_accept(_nr, flip=True))
+            menu.addAction(act_flip)
+            menu.addSeparator()
+
         if n == 1:
             ref = selected_refs[0]
             row = self._row_for_ref(ref)

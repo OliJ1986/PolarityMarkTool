@@ -44,7 +44,8 @@ _ROLE_COLORS = {
     "profile":       (0.0,  0.0,  0.0),
 }
 _HIGHLIGHT_GREEN  = (0.20, 0.95, 0.08)   # bright green highlighter
-_HIGHLIGHT_ORANGE = (1.00, 0.62, 0.00)   # orange highlighter
+_HIGHLIGHT_ORANGE = (1.00, 0.62, 0.00)   # orange highlighter (DNP)
+_HIGHLIGHT_YELLOW = (1.00, 0.88, 0.00)   # yellow highlighter (needs_review)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -322,6 +323,18 @@ def _distance_to_polygon_edge(px, py, ux, uy, points):
         if t > 0 and 0 <= u <= 1:
             min_dist = min(min_dist, t)
     return min_dist if min_dist != sys.float_info.max else 0.0
+
+def _marker_color(oc, ovr: dict) -> tuple:
+    """Return the highlight colour for a polarity marker.
+
+    • Yellow  — detection_method == "fallback" and user has NOT yet reviewed it
+    • Green   — everything else (high-confidence detection OR user accepted/flipped)
+    """
+    method = getattr(oc, "_detection_method", "")
+    if method == "fallback" and not ovr:
+        return _HIGHLIGHT_YELLOW
+    return _HIGHLIGHT_GREEN
+
 
 def _draw_polarity_marker(page, px:float, py:float, cx:float, cy:float,
                            r:float, color:tuple, is_two_pin:bool, oc:int,
@@ -716,7 +729,7 @@ def render_odb_to_pdf(
 
                 _draw_polarity_marker(
                     doc[pi], px_, py_, cx_, cy_, marker_r,
-                    _HIGHLIGHT_GREEN, len(oc.pins) == 2, ocg_markers, body_shape,
+                    _marker_color(oc, ovr), len(oc.pins) == 2, ocg_markers, body_shape,
                 )
 
         _log("   [render] Polarity markers done.")

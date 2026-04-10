@@ -86,9 +86,10 @@ class Exporter:
         source_path: str = "",
     ) -> str:
         """Write analysis results to a JSON file. Returns the written path."""
-        marked    = sum(1 for r in results if r.polarity_status == "marked")
-        unmarked  = sum(1 for r in results if r.polarity_status == "unmarked")
-        ambiguous = sum(1 for r in results if r.polarity_status == "ambiguous")
+        marked       = sum(1 for r in results if r.polarity_status == "marked")
+        unmarked     = sum(1 for r in results if r.polarity_status == "unmarked")
+        ambiguous    = sum(1 for r in results if r.polarity_status == "ambiguous")
+        needs_review = sum(1 for r in results if r.polarity_status == "needs_review")
 
         payload = {
             "tool":        "PolarityMark",
@@ -97,9 +98,10 @@ class Exporter:
             "source_file": os.path.basename(source_path),
             "summary": {
                 "total_components": len(results),
-                "marked":    marked,
-                "unmarked":  unmarked,
-                "ambiguous": ambiguous,
+                "marked":        marked,
+                "unmarked":      unmarked,
+                "ambiguous":     ambiguous,
+                "needs_review":  needs_review,
             },
             "components": [r.to_dict() for r in results],
         }
@@ -189,6 +191,7 @@ class Exporter:
                 page=page,
                 confidence=float(m.get("confidence") or 0.0),
                 source=str(m.get("source") or "json"),
+                detection_method=str(m.get("detection_method") or ""),
             ))
         return result
 

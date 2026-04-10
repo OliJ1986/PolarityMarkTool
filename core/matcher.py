@@ -57,9 +57,10 @@ class MatchResult:
             "bbox": self.component.bbox.to_dict(),
             "markers": [
                 {
-                    "type":       m.marker_type,
-                    "confidence": round(m.confidence, 3),
-                    "source":     m.source,
+                    "type":             m.marker_type,
+                    "confidence":       round(m.confidence, 3),
+                    "source":           m.source,
+                    "detection_method": m.detection_method,
                     "position": {
                         "x": round(m.center.x, 2),
                         "y": round(m.center.y, 2),
