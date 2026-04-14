@@ -36,7 +36,7 @@ _DEADZONE_FRAC = 0.05  # deadzone = span * _DEADZONE_FRAC
 _DIAG_SPREAD   = 0.50  # Tier 1: max ratio min_spread/max_spread for decision
 
 # Debug: set to a ref designator (e.g. "D12") to print detailed scoring info
-_DEBUG_REF = ""
+_DEBUG_REF = ""  # set to ref like "D101" for debug
 
 # Layer names containing any of these substrings are excluded regardless of TYPE
 _EXCLUDE_NAMES = ("mask", "paste", "solder", "drill", "rout")
@@ -209,13 +209,18 @@ def _discover_cathode_layers(content: str) -> Dict[str, List[str]]:
         # Detect side
         is_top = any(k in nl for k in ("top", "f.", "_t.", "_t_"))
         is_bot = any(k in nl for k in ("bot", "b.", "_b.", "_b_", "bottom"))
-        # If side cannot be determined, default to top
+        # Short assembly layer names often end with 't' or 'b' (e.g. assemt, assemb)
         if not is_top and not is_bot:
-            is_top = True
+            if nl.endswith("t"):
+                is_top = True
+            elif nl.endswith("b"):
+                is_bot = True
+            else:
+                is_top = True  # default
 
         # Categorize by name patterns
         is_silk_by_name = ("silk" in nl or "overlay" in nl)
-        is_assy_by_name = ("assembl" in nl or "assy" in nl)
+        is_assy_by_name = ("assem" in nl or "assy" in nl)
         is_silk_by_type = (ltyp == "SILK_SCREEN")
 
         if is_silk_by_name:
@@ -267,13 +272,21 @@ def _find_layers_by_folder(cache: Dict[str, str]) -> Dict[str, List[str]]:
 
         is_bot = any(k in nl for k in ("bot", "b.", "bottom"))
         is_top = any(k in nl for k in ("top", "f.")) or not is_bot
+        # Suffix abbreviation fallback (assemt → top, assemb → bot)
+        if not is_top and not is_bot:
+            if nl.endswith("t"):
+                is_top = True
+            elif nl.endswith("b"):
+                is_bot = True
+            else:
+                is_top = True
 
         if "silk" in nl or "overlay" in nl:
             if is_top and layer not in silk_top:
                 silk_top.append(layer)
             elif is_bot and layer not in silk_bot:
                 silk_bot.append(layer)
-        elif "assembl" in nl or "assy" in nl:
+        elif "assem" in nl or "assy" in nl:
             if is_top and layer not in assy_top:
                 assy_top.append(layer)
             elif is_bot and layer not in assy_bot:
@@ -448,10 +461,24 @@ def _score_triangle(comp, lines, syms, search_r, mx, my, span, ux, uy, deadzone)
 
     debug = _DEBUG_REF and comp.ref == _DEBUG_REF
 
+    # Perpendicular distance limit: reject diagonal lines whose midpoint is
+    # far from the component axis — these are usually ref designator text
+    # strokes from nearby components.
+    max_perp_dist = span * 0.5
+
     for lx1, ly1, lx2, ly2, lw, ll, along, perp, proj in _nearby_lines(comp, lines, syms, search_r, mx, my):
         # Diagonal: along_frac between 0.15 and 0.92, length >= span*0.20
         # Upper bound 0.92 accommodates elongated triangles on assembly layers
         if 0.15 <= along <= 0.92 and ll >= span * 0.20:
+            # Check perpendicular distance of line midpoint from component axis
+            lmx = (lx1 + lx2) / 2
+            lmy = (ly1 + ly2) / 2
+            perp_dist = abs((lmx - mx) * (-uy) + (lmy - my) * ux)
+            if perp_dist > max_perp_dist:
+                if debug:
+                    print("  [TRI] skip diag (%.1f,%.1f)-(%.1f,%.1f) perp_dist=%.3f > %.3f"
+                          % (lx1, ly1, lx2, ly2, perp_dist, max_perp_dist))
+                continue
             n_diag += 1
             # Collect both endpoints
             for ex, ey in [(lx1, ly1), (lx2, ly2)]:
@@ -461,12 +488,20 @@ def _score_triangle(comp, lines, syms, search_r, mx, my, span, ux, uy, deadzone)
                 elif ep > deadzone:
                     diag_eps_1.append((ex, ey))
             if debug:
-                print("  [TRI] diag line (%.3f,%.3f)-(%.3f,%.3f) along=%.2f len=%.3f"
-                      % (lx1, ly1, lx2, ly2, along, ll))
+                print("  [TRI] diag line (%.3f,%.3f)-(%.3f,%.3f) along=%.2f len=%.3f perp=%.3f"
+                      % (lx1, ly1, lx2, ly2, along, ll, perp_dist))
 
     if n_diag < 2:
         if debug:
             print("  [TRI] only %d diagonal lines -- skip" % n_diag)
+        return None
+
+    # Both sides must have endpoints — if all endpoints are on one side,
+    # it's not a triangle (likely noise or text strokes)
+    if len(diag_eps_0) < 1 or len(diag_eps_1) < 1:
+        if debug:
+            print("  [TRI] one side empty (eps0=%d eps1=%d) -- skip"
+                  % (len(diag_eps_0), len(diag_eps_1)))
         return None
 
     def spread(pts):

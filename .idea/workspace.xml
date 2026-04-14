@@ -4,10 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Add detection method for diode/LED cathode pins and enhance polarity marker visuals">
-      <change beforePath="$PROJECT_DIR$/.idea/copilotDiffState.xml" beforeDir="false" />
+    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Enhance diode/LED cathode detection by analyzing silkscreen and assembly layers">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/odb_parser.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_parser.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/core/odb_silk_cathode.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_silk_cathode.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -60,6 +58,7 @@
     "Python._test_color_filter.executor": "Run",
     "Python.app.executor": "Run",
     "Python.correction_dialog.executor": "Run",
+    "Python.diag_ubf1194.executor": "Run",
     "Python.dxf_parser.executor": "Run",
     "Python.exporter.executor": "Run",
     "Python.main_window.executor": "Run",
@@ -71,7 +70,6 @@
     "Python.test_ubf3604.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "git-widget-placeholder": "master",
     "last_opened_file_path": "C:/Users/OJanka/PycharmProjects/PolarityMarkTool/PDF",
     "settings.editor.selected.configurable": "com.github.copilot.settings.chat.ChatConfigurable"
@@ -210,7 +208,15 @@
       <option name="project" value="LOCAL" />
       <updated>1775820431443</updated>
     </task>
-    <option name="localTasksCounter" value="15" />
+    <task id="LOCAL-00015" summary="Enhance diode/LED cathode detection by analyzing silkscreen and assembly layers">
+      <option name="closed" value="true" />
+      <created>1776175071369</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1776175071369</updated>
+    </task>
+    <option name="localTasksCounter" value="16" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
@@ -222,7 +228,8 @@
     <MESSAGE value="Add DNP (Do-Not-Place) support and enhance correction dialog for bulk editing" />
     <MESSAGE value="Enhance PDF preview functionality and add support for floating window" />
     <MESSAGE value="Add detection method for diode/LED cathode pins and enhance polarity marker visuals" />
-    <option name="LAST_COMMIT_MESSAGE" value="Add detection method for diode/LED cathode pins and enhance polarity marker visuals" />
+    <MESSAGE value="Enhance diode/LED cathode detection by analyzing silkscreen and assembly layers" />
+    <option name="LAST_COMMIT_MESSAGE" value="Enhance diode/LED cathode detection by analyzing silkscreen and assembly layers" />
   </component>
   <component name="github-copilot-workspace">
     <instructionFileLocations>
