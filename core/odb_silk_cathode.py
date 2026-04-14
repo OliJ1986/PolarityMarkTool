@@ -1,19 +1,17 @@
 """
 core/odb_silk_cathode.py
 ────────────────────────
-Detect diode / LED cathode pins by analysing the ODB++ silkscreen layer.
+Detect diode / LED cathode pins by analysing ODB++ silkscreen and assembly
+layers.
 
-For each 2-pin diode/LED component the algorithm:
-  1. Reads silk-layer line features near the component footprint.
-  2. Projects each feature's midpoint onto the pin-to-pin axis.
-  3. Scores each pin half by total feature "mass" (length × width),
-     boosted 3.5× for features running perpendicular to the axis
-     (= cathode band candidates).
-  4. Declares the heavier half the cathode when its ratio > _MIN_RATIO.
+Three-tier scoring approach (stops at first conclusive result):
+  Tier 1 – Triangle convergence: diagonal lines converge at the triangle
+            apex → cathode side.
+  Tier 2 – Perpendicular line count: cathode bar = extra perp line on one side.
+  Tier 3 – Mass scoring fallback: weighted feature mass comparison.
 
-Returns a dict {ref: pin_index} where pin_index is 0 or 1
-(index into _ODBComponent.pins[]).  Returns {} on any error so
-callers can fall back to other detection methods without crashing.
+Layer discovery excludes mask/paste/solder layers by NAME (not TYPE) because
+some boards have swapped TYPE fields in the matrix.
 """
 from __future__ import annotations
 
@@ -22,14 +20,26 @@ import os
 import re
 import tarfile
 import zipfile
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tuning constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-_MIN_RATIO = 0.55   # cathode side must hold this fraction of total silk mass
-_MIN_MASS  = 0.02   # minimum total silk mass (mm²) required for a decision
+_MIN_RATIO    = 0.55   # Tier 3: cathode side must hold this fraction
+_MIN_MASS     = 0.02   # Tier 3: minimum total silk mass (mm²)
+
+_SEARCH_FACTOR = 0.9   # search_r = span * _SEARCH_FACTOR + _SEARCH_OFFSET
+_SEARCH_OFFSET = 0.8
+_DEADZONE_FRAC = 0.05  # deadzone = span * _DEADZONE_FRAC
+
+_DIAG_SPREAD   = 0.50  # Tier 1: max ratio min_spread/max_spread for decision
+
+# Debug: set to a ref designator (e.g. "D12") to print detailed scoring info
+_DEBUG_REF = ""
+
+# Layer names containing any of these substrings are excluded regardless of TYPE
+_EXCLUDE_NAMES = ("mask", "paste", "solder", "drill", "rout")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,10 +48,9 @@ _MIN_MASS  = 0.02   # minimum total silk mass (mm²) required for a decision
 
 def detect_cathodes(odb_path: str, odb_comps: list) -> Dict[str, int]:
     """Return {ref: pin_index} for diodes/LEDs whose cathode can be inferred
-    from silkscreen geometry.  *pin_index* is 0 or 1 (into comp.pins[]).
+    from silkscreen / assembly geometry.  *pin_index* is 0 or 1.
 
-    Silently returns {} if the archive cannot be read, no silk layer exists,
-    or scores are inconclusive.
+    Silently returns {} on any error.
     """
     try:
         return _detect_impl(odb_path, odb_comps)
@@ -148,39 +157,31 @@ def _read_archive(odb_path: str) -> Tuple[Dict[str, str], str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Layer discovery
+# Layer discovery  (NEW — name-based, excludes mask/paste/solder)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _parse_silk_from_matrix(content: str) -> Dict[str, str]:
-    """Parse ODB++ matrix file, return {side: layer_name} for silk layers."""
+def _discover_cathode_layers(content: str) -> Dict[str, List[str]]:
+    """Parse the ODB++ matrix and return candidate layers for cathode detection.
+
+    Returns {side: [layer_name, ...]} where side is "top" or "bot".
+    Layer lists are ordered by preference:
+      1. Silk layers identified by NAME (silk/overlay in name)
+      2. Assembly layers (assembly/assy in name)
+      3. Silk layers identified by TYPE=SILK_SCREEN only
+    Layers whose name contains mask/paste/solder/drill/rout are excluded.
+    """
+    # Parse all layers from matrix
+    layers_info: List[Tuple[str, str]] = []   # [(name, type), ...]
     in_layer = False
     name = ltype = ""
-    silk_top = silk_bot = None
 
     for line in content.splitlines():
         line = line.strip()
         if line == "LAYER {":
             in_layer = True; name = ""; ltype = ""
         elif line == "}" and in_layer:
-            if name and (
-                ltype == "SILK_SCREEN"
-                or "silk" in name.lower()
-                or "overlay" in name.lower()
-            ):
-                n = name.lower()
-                is_top = any(k in n for k in ("top", "f.", "top_overlay",
-                                               "silkscreen_top", "silk_top"))
-                is_bot = any(k in n for k in ("bot", "b.", "bottom",
-                                               "silkscreen_bot", "silk_bot"))
-                if is_top and not silk_top:
-                    silk_top = name
-                elif is_bot and not silk_bot:
-                    silk_bot = name
-                elif not is_top and not is_bot:
-                    if not silk_top:
-                        silk_top = name
-                    elif not silk_bot:
-                        silk_bot = name
+            if name:
+                layers_info.append((name, ltype))
             in_layer = False
         elif in_layer and "=" in line:
             k, _, v = line.partition("=")
@@ -190,17 +191,67 @@ def _parse_silk_from_matrix(content: str) -> Dict[str, str]:
             elif k == "TYPE":
                 ltype = v.upper()
 
-    result: Dict[str, str] = {}
-    if silk_top:
-        result["top"] = silk_top
-    if silk_bot:
-        result["bot"] = silk_bot
+    # Categorize
+    silk_name_top:  List[str] = []
+    silk_name_bot:  List[str] = []
+    silk_type_top:  List[str] = []
+    silk_type_bot:  List[str] = []
+    assy_top:       List[str] = []
+    assy_bot:       List[str] = []
+
+    for lname, ltyp in layers_info:
+        nl = lname.lower()
+
+        # Exclude mask/paste/solder/drill/rout by name
+        if any(ex in nl for ex in _EXCLUDE_NAMES):
+            continue
+
+        # Detect side
+        is_top = any(k in nl for k in ("top", "f.", "_t.", "_t_"))
+        is_bot = any(k in nl for k in ("bot", "b.", "_b.", "_b_", "bottom"))
+        # If side cannot be determined, default to top
+        if not is_top and not is_bot:
+            is_top = True
+
+        # Categorize by name patterns
+        is_silk_by_name = ("silk" in nl or "overlay" in nl)
+        is_assy_by_name = ("assembl" in nl or "assy" in nl)
+        is_silk_by_type = (ltyp == "SILK_SCREEN")
+
+        if is_silk_by_name:
+            if is_top:
+                silk_name_top.append(lname)
+            if is_bot:
+                silk_name_bot.append(lname)
+        elif is_assy_by_name:
+            if is_top:
+                assy_top.append(lname)
+            if is_bot:
+                assy_bot.append(lname)
+        elif is_silk_by_type:
+            if is_top:
+                silk_type_top.append(lname)
+            if is_bot:
+                silk_type_bot.append(lname)
+
+    # Build ordered preference lists per side
+    result: Dict[str, List[str]] = {}
+    top_list = silk_name_top + assy_top + silk_type_top
+    bot_list = silk_name_bot + assy_bot + silk_type_bot
+    if top_list:
+        result["top"] = top_list
+    if bot_list:
+        result["bot"] = bot_list
     return result
 
 
-def _find_silk_by_folder(cache: Dict[str, str]) -> Dict[str, str]:
-    """Fallback: discover silk layers by scanning layer folder names."""
-    silk_top = silk_bot = None
+def _find_layers_by_folder(cache: Dict[str, str]) -> Dict[str, List[str]]:
+    """Fallback: discover silk/assembly layers by scanning folder names."""
+    silk_top:  List[str] = []
+    silk_bot:  List[str] = []
+    assy_top:  List[str] = []
+    assy_bot:  List[str] = []
+
     for key in cache:
         if "/layers/" not in key:
             continue
@@ -208,20 +259,33 @@ def _find_silk_by_folder(cache: Dict[str, str]) -> Dict[str, str]:
         if len(parts) < 2:
             continue
         layer = parts[1].split("/")[0]
-        if "silk" in layer or "overlay" in layer:
-            n = layer.lower()
-            is_bot = any(k in n for k in ("bot", "b.", "bottom"))
-            is_top = any(k in n for k in ("top", "f.")) or not is_bot
-            if is_top and not silk_top:
-                silk_top = layer
-            elif is_bot and not silk_bot:
-                silk_bot = layer
+        nl = layer.lower()
 
-    result: Dict[str, str] = {}
-    if silk_top:
-        result["top"] = silk_top
-    if silk_bot:
-        result["bot"] = silk_bot
+        # Exclude
+        if any(ex in nl for ex in _EXCLUDE_NAMES):
+            continue
+
+        is_bot = any(k in nl for k in ("bot", "b.", "bottom"))
+        is_top = any(k in nl for k in ("top", "f.")) or not is_bot
+
+        if "silk" in nl or "overlay" in nl:
+            if is_top and layer not in silk_top:
+                silk_top.append(layer)
+            elif is_bot and layer not in silk_bot:
+                silk_bot.append(layer)
+        elif "assembl" in nl or "assy" in nl:
+            if is_top and layer not in assy_top:
+                assy_top.append(layer)
+            elif is_bot and layer not in assy_bot:
+                assy_bot.append(layer)
+
+    result: Dict[str, List[str]] = {}
+    top_list = silk_top + assy_top
+    bot_list = silk_bot + assy_bot
+    if top_list:
+        result["top"] = top_list
+    if bot_list:
+        result["bot"] = bot_list
     return result
 
 
@@ -339,77 +403,153 @@ def _parse_features_simple(content: str) -> Tuple[dict, list, list]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Cathode scoring
+# Cathode scoring — 3-tier approach
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _score_pins(comp, lines: list, pads: list, syms: dict) -> Optional[int]:
-    """Score which of comp.pins[0] vs comp.pins[1] is the cathode.
-
-    Returns pin index (0 or 1), or None if the result is inconclusive.
-
-    Algorithm
-    ---------
-    For each silk line feature within the search radius around the component:
-      • Compute its midpoint and project onto the pin0→pin1 axis.
-      • Weight by (line_length × line_width) boosted for perpendicular lines
-        (a line perpendicular to the pad axis = the cathode band).
-      • Accumulate weighted scores for pin[0] side and pin[1] side.
-
-    The side with score_ratio >= _MIN_RATIO (default 55 %) wins.
-    """
+def _nearby_lines(comp, lines, syms, search_r, mx, my):
+    """Yield (lx1, ly1, lx2, ly2, sym_w, length, along_frac, perp_frac, proj)
+    for lines within search_r of the component midpoint."""
     p0, p1 = comp.pins[0], comp.pins[1]
-    x0, y0 = p0.x, p0.y
-    x1, y1 = p1.x, p1.y
-
-    mx = (x0 + x1) / 2
-    my = (y0 + y1) / 2
-    dx = x1 - x0
-    dy = y1 - y0
+    dx = p1.x - p0.x
+    dy = p1.y - p0.y
     span = math.hypot(dx, dy)
-    if span < 0.3:
-        return None  # pads too close — skip
+    if span < 0.01:
+        return
+    ux, uy = dx / span, dy / span
 
-    ux, uy = dx / span, dy / span     # unit vector from pin[0] to pin[1]
-    search_r = span * 1.4 + 1.5       # search radius in mm
-    deadzone  = span * 0.08            # 8 % of span — midpoint dead zone
-
-    score = [0.0, 0.0]
-
-    # ── Line features ─────────────────────────────────────────────────────
     for (lx1, ly1, lx2, ly2, sym_idx) in lines:
         lmx = (lx1 + lx2) / 2
         lmy = (ly1 + ly2) / 2
         if math.hypot(lmx - mx, lmy - my) > search_r:
             continue
-
         sym = syms.get(sym_idx, (0.1, 0.1))
-        lw = sym[0]                        # line width in mm
-
+        lw = sym[0]
         ldx = lx2 - lx1
         ldy = ly2 - ly1
         ll = math.hypot(ldx, ldy)
         if ll < 1e-6:
-            ll = lw
-
-        # Perpendicularity to pad axis (0 = parallel, 1 = perpendicular)
-        if ll > 1e-6:
-            along_frac = abs((ldx * ux + ldy * uy) / ll)
-            perp_frac = math.sqrt(max(0.0, 1.0 - along_frac * along_frac))
-        else:
-            perp_frac = 0.5
-
-        # Lines perpendicular to the pad axis get a 3.5× mass boost because
-        # they are likely the cathode band rather than the body outline.
-        perp_boost = 1.0 + 2.5 * perp_frac          # 1.0 … 3.5
-        weight = max(ll, lw) * max(lw, 0.02) * perp_boost
-
+            continue
+        along = abs((ldx * ux + ldy * uy) / ll)
+        perp = math.sqrt(max(0.0, 1.0 - along * along))
         proj = (lmx - mx) * ux + (lmy - my) * uy
+        yield lx1, ly1, lx2, ly2, lw, ll, along, perp, proj
+
+
+def _score_triangle(comp, lines, syms, search_r, mx, my, span, ux, uy, deadzone) -> Optional[int]:
+    """Tier 1: Diagonal line convergence → triangle apex = cathode.
+
+    Diagonal lines (along_frac between 0.15 and 0.92) have their endpoints
+    collected per side.  The side where endpoints cluster tightly (small spread)
+    = triangle apex = cathode.
+    """
+    diag_eps_0: List[Tuple[float, float]] = []   # endpoints on pin0 side
+    diag_eps_1: List[Tuple[float, float]] = []   # endpoints on pin1 side
+    n_diag = 0
+
+    debug = _DEBUG_REF and comp.ref == _DEBUG_REF
+
+    for lx1, ly1, lx2, ly2, lw, ll, along, perp, proj in _nearby_lines(comp, lines, syms, search_r, mx, my):
+        # Diagonal: along_frac between 0.15 and 0.92, length >= span*0.20
+        # Upper bound 0.92 accommodates elongated triangles on assembly layers
+        if 0.15 <= along <= 0.92 and ll >= span * 0.20:
+            n_diag += 1
+            # Collect both endpoints
+            for ex, ey in [(lx1, ly1), (lx2, ly2)]:
+                ep = (ex - mx) * ux + (ey - my) * uy
+                if ep < -deadzone:
+                    diag_eps_0.append((ex, ey))
+                elif ep > deadzone:
+                    diag_eps_1.append((ex, ey))
+            if debug:
+                print("  [TRI] diag line (%.3f,%.3f)-(%.3f,%.3f) along=%.2f len=%.3f"
+                      % (lx1, ly1, lx2, ly2, along, ll))
+
+    if n_diag < 2:
+        if debug:
+            print("  [TRI] only %d diagonal lines -- skip" % n_diag)
+        return None
+
+    def spread(pts):
+        if len(pts) < 2:
+            return 0.0
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+
+    s0 = spread(diag_eps_0)
+    s1 = spread(diag_eps_1)
+
+    if debug:
+        print("  [TRI] n_diag=%d eps0=%d eps1=%d spread0=%.4f spread1=%.4f"
+              % (n_diag, len(diag_eps_0), len(diag_eps_1), s0, s1))
+
+    if max(s0, s1) < 1e-6:
+        return None
+
+    ratio = min(s0, s1) / max(s0, s1)
+    if ratio > _DIAG_SPREAD:
+        if debug:
+            print("  [TRI] ratio=%.3f > %.2f -- inconclusive" % (ratio, _DIAG_SPREAD))
+        return None
+
+    result = 0 if s0 < s1 else 1
+    if debug:
+        print("  [TRI] -> cathode on pin%d (ratio=%.3f)" % (result, ratio))
+    return result
+
+
+def _score_perp_count(comp, lines, syms, search_r, mx, my, span, ux, uy, deadzone) -> Optional[int]:
+    """Tier 2: Count perpendicular lines per side.
+
+    A perpendicular line (along_frac < 0.3) with length > max(span*0.30, 1.0)
+    is counted.  The higher threshold filters out ref designator text strokes
+    (~0.83mm) that would otherwise pollute the count.
+    Cathode bar adds an extra perp line. Need diff >= 2 for a decision.
+    """
+    debug = _DEBUG_REF and comp.ref == _DEBUG_REF
+    count = [0, 0]
+    min_perp_len = max(span * 0.30, 1.0)
+
+    for lx1, ly1, lx2, ly2, lw, ll, along, perp, proj in _nearby_lines(comp, lines, syms, search_r, mx, my):
+        if along < 0.30 and ll >= min_perp_len:
+            if proj < -deadzone:
+                count[0] += 1
+            elif proj > deadzone:
+                count[1] += 1
+            if debug:
+                side = 0 if proj < -deadzone else (1 if proj > deadzone else -1)
+                print("  [PERP] line len=%.3f along=%.2f proj=%.3f -> side%d" % (ll, along, proj, side))
+
+    diff = abs(count[0] - count[1])
+    if debug:
+        print("  [PERP] count0=%d count1=%d diff=%d" % (count[0], count[1], diff))
+
+    if diff >= 2:
+        result = 0 if count[0] > count[1] else 1
+        if debug:
+            print("  [PERP] -> cathode on pin%d" % result)
+        return result
+    return None
+
+
+def _score_mass(comp, lines, pads, syms, search_r, mx, my, span, ux, uy, deadzone) -> Optional[int]:
+    """Tier 3: Original mass-based scoring (fallback).
+
+    Weight features by (length × width) with 3.5× perpendicular boost.
+    """
+    debug = _DEBUG_REF and comp.ref == _DEBUG_REF
+    score = [0.0, 0.0]
+
+    for lx1, ly1, lx2, ly2, lw, ll, along, perp, proj in _nearby_lines(comp, lines, syms, search_r, mx, my):
+        perp_boost = 1.0 + 2.5 * perp
+        weight = max(ll, lw) * max(lw, 0.02) * perp_boost
         if proj > deadzone:
             score[1] += weight
         elif proj < -deadzone:
             score[0] += weight
 
-    # ── Pad-type features (filled symbols on silk) ─────────────────────────
+    # Pad features
+    p0, p1 = comp.pins[0], comp.pins[1]
     for (px, py, sym_idx) in pads:
         if math.hypot(px - mx, py - my) > search_r:
             continue
@@ -422,17 +562,69 @@ def _score_pins(comp, lines: list, pads: list, syms: dict) -> Optional[int]:
             score[0] += weight
 
     total = score[0] + score[1]
+    if debug:
+        print("  [MASS] score0=%.4f score1=%.4f total=%.4f" % (score[0], score[1], total))
+
     if total < _MIN_MASS:
-        return None  # not enough silk features
+        return None
 
     ratio0 = score[0] / total
     ratio1 = score[1] / total
 
     if ratio0 >= _MIN_RATIO:
+        if debug:
+            print("  [MASS] -> cathode on pin0 (ratio=%.3f)" % ratio0)
         return 0
     elif ratio1 >= _MIN_RATIO:
+        if debug:
+            print("  [MASS] -> cathode on pin1 (ratio=%.3f)" % ratio1)
         return 1
-    return None  # inconclusive
+
+    if debug:
+        print("  [MASS] inconclusive (ratio0=%.3f ratio1=%.3f)" % (ratio0, ratio1))
+    return None
+
+
+def _score_component(comp, lines, pads, syms) -> Optional[int]:
+    """Run the 3-tier scoring cascade for a single component.
+
+    Returns pin index (0 or 1) or None.
+    """
+    p0, p1 = comp.pins[0], comp.pins[1]
+    x0, y0 = p0.x, p0.y
+    x1, y1 = p1.x, p1.y
+
+    mx = (x0 + x1) / 2
+    my = (y0 + y1) / 2
+    dx = x1 - x0
+    dy = y1 - y0
+    span = math.hypot(dx, dy)
+    if span < 0.3:
+        return None
+
+    ux, uy = dx / span, dy / span
+    search_r = span * _SEARCH_FACTOR + _SEARCH_OFFSET
+    deadzone = span * _DEADZONE_FRAC
+
+    debug = _DEBUG_REF and comp.ref == _DEBUG_REF
+    if debug:
+        print("\n=== Scoring %s ===" % comp.ref)
+        print("  pin0=(%.3f,%.3f) pin1=(%.3f,%.3f) span=%.3f" % (x0, y0, x1, y1, span))
+        print("  search_r=%.3f deadzone=%.3f" % (search_r, deadzone))
+
+    # Tier 1 — triangle convergence
+    result = _score_triangle(comp, lines, syms, search_r, mx, my, span, ux, uy, deadzone)
+    if result is not None:
+        return result
+
+    # Tier 2 — perpendicular line count
+    result = _score_perp_count(comp, lines, syms, search_r, mx, my, span, ux, uy, deadzone)
+    if result is not None:
+        return result
+
+    # Tier 3 — mass scoring
+    result = _score_mass(comp, lines, pads, syms, search_r, mx, my, span, ux, uy, deadzone)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -444,51 +636,61 @@ def _detect_impl(odb_path: str, odb_comps: list) -> Dict[str, int]:
     if not cache:
         return {}
 
-    # Find silk layer names
+    # Find matrix content
     matrix_content: Optional[str] = None
     for key, content in cache.items():
         if key.endswith("matrix/matrix"):
             matrix_content = content
             break
 
-    silk_layers = _parse_silk_from_matrix(matrix_content) if matrix_content else {}
-    if not silk_layers:
-        silk_layers = _find_silk_by_folder(cache)
-    if not silk_layers:
+    # Discover layers (new multi-layer approach)
+    layer_map: Dict[str, List[str]] = {}
+    if matrix_content:
+        layer_map = _discover_cathode_layers(matrix_content)
+    if not layer_map:
+        layer_map = _find_layers_by_folder(cache)
+    if not layer_map:
         return {}
 
-    # Parse silk features per side
-    silk_parsed: Dict[str, tuple] = {}  # side → (syms, lines, pads)
-    for side, layer_name in silk_layers.items():
-        content = _get_layer_features(cache, step_name, layer_name)
-        if content:
-            syms, lines, pads = _parse_features_simple(content)
-            silk_parsed[side] = (syms, lines, pads)
+    # Parse features for all candidate layers per side
+    parsed_per_side: Dict[str, List[Tuple[dict, list, list]]] = {}
+    for side, layer_names in layer_map.items():
+        side_data: List[Tuple[dict, list, list]] = []
+        for lname in layer_names:
+            fcontent = _get_layer_features(cache, step_name, lname)
+            if fcontent:
+                syms, lines, pads = _parse_features_simple(fcontent)
+                if lines or pads:
+                    side_data.append((syms, lines, pads))
+        if side_data:
+            parsed_per_side[side] = side_data
 
-    if not silk_parsed:
+    if not parsed_per_side:
         return {}
 
     # Score each 2-pin diode/LED
     results: Dict[str, int] = {}
     for comp in odb_comps:
-        if comp.comp_type not in ("diode", "led"):
+        if comp.comp_type not in ("diode", "led", "zener", "tvs", "schottky"):
             continue
         if len(comp.pins) != 2:
             continue
 
         side = comp.side  # "top" or "bot"
-        data = (
-            silk_parsed.get(side)
-            or silk_parsed.get("top")
-            or next(iter(silk_parsed.values()), None)
+        side_layers = (
+            parsed_per_side.get(side)
+            or parsed_per_side.get("top")
+            or next(iter(parsed_per_side.values()), None)
         )
-        if not data:
+        if not side_layers:
             continue
 
-        syms, lines, pads = data
-        pin_idx = _score_pins(comp, lines, pads, syms)
-        if pin_idx is not None:
-            results[comp.ref] = pin_idx
+        # Try each layer in preference order; stop at first conclusive result
+        for syms, lines, pads in side_layers:
+            pin_idx = _score_component(comp, lines, pads, syms)
+            if pin_idx is not None:
+                results[comp.ref] = pin_idx
+                break
 
     return results
 

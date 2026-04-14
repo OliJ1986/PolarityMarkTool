@@ -74,16 +74,16 @@ class _ODBComponent:
     _detection_method: str = field(default="", repr=False)
 
     def set_cathode_from_silk(self, pin_idx: int) -> None:
-        """Set cathode from silk layer analysis.
+        """Set cathode from silk / assembly layer geometric analysis.
 
-        Silk detection is skipped when more authoritative information is
-        already available:
-          • Functional pin names (K / A) are set by the component designer
-            and are never wrong.
-          • A GND-net match (net_gnd) is also very reliable.
+        Silk detection is skipped only when functional pin names (K / A)
+        are present — those are set by the component designer and are
+        never wrong.
 
-        Silk IS applied when the only other option would be fallback (pin-2
-        convention), since silk physical geometry beats a mere convention.
+        Silk DOES override net_gnd because the GND heuristic is unreliable
+        for protection / TVS / Schottky diodes where the anode (not cathode)
+        often connects to GND.  The physical board geometry (diode triangle
+        symbol) is the ground truth.
         """
         # Do not override K/A functional pin names — always correct
         has_k = any(p.name.upper() in _CATHODE_NAMES for p in self.pins)
@@ -91,9 +91,6 @@ class _ODBComponent:
         if has_k or has_a:
             return  # pin names are unambiguous — leave them alone
 
-        # Do not override a reliable net_gnd detection
-        if self._detection_method == "net_gnd":
-            return
 
         if 0 <= pin_idx < len(self.pins):
             pin = self.pins[pin_idx]
