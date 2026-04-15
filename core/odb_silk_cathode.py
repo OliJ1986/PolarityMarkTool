@@ -540,10 +540,13 @@ def _score_perp_count(comp, lines, syms, search_r, mx, my, span, ux, uy, deadzon
     is counted.  The higher threshold filters out ref designator text strokes
     (~0.83mm) that would otherwise pollute the count.
     Cathode bar adds an extra perp line. Need diff >= 2 for a decision.
+
+    The 0.99 factor compensates for floating-point rounding in coordinate
+    subtraction (e.g. 8.2 − 7.2 ≈ 0.9999… in IEEE 754).
     """
     debug = _DEBUG_REF and comp.ref == _DEBUG_REF
     count = [0, 0]
-    min_perp_len = max(span * 0.30, 1.0)
+    min_perp_len = max(span * 0.30, 1.0) * 0.99
 
     for lx1, ly1, lx2, ly2, lw, ll, along, perp, proj in _nearby_lines(comp, lines, syms, search_r, mx, my):
         if along < 0.30 and ll >= min_perp_len:
@@ -571,11 +574,38 @@ def _score_mass(comp, lines, pads, syms, search_r, mx, my, span, ux, uy, deadzon
     """Tier 3: Original mass-based scoring (fallback).
 
     Weight features by (length × width) with 3.5× perpendicular boost.
+
+    A perpendicular-distance filter suppresses features from nearby components:
+    estimate the body half-height from the longest parallel lines near the
+    component axis, and reject lines whose midpoint is too far from the axis.
     """
     debug = _DEBUG_REF and comp.ref == _DEBUG_REF
+
+    # ── Estimate body half-height from parallel lines near centre ──
+    body_half_h = 0.0
+    for lx1, ly1, lx2, ly2, lw, ll, along, perp, proj in _nearby_lines(comp, lines, syms, search_r, mx, my):
+        # Long parallel line close to the centre → body edge
+        if along > 0.70 and abs(proj) <= span * 0.15 and ll >= span * 0.30:
+            lmx = (lx1 + lx2) / 2
+            lmy = (ly1 + ly2) / 2
+            pd = abs((lmx - mx) * (-uy) + (lmy - my) * ux)
+            if pd > body_half_h:
+                body_half_h = pd
+
+    # Allow 30 % margin beyond the body edge; fall back to search_r
+    max_perp_d = body_half_h * 1.3 if body_half_h > 0.1 else search_r
+    if debug:
+        print("  [MASS] body_half_h=%.3f max_perp_d=%.3f" % (body_half_h, max_perp_d))
+
     score = [0.0, 0.0]
 
     for lx1, ly1, lx2, ly2, lw, ll, along, perp, proj in _nearby_lines(comp, lines, syms, search_r, mx, my):
+        # Filter features too far from the component axis (nearby components)
+        lmx = (lx1 + lx2) / 2
+        lmy = (ly1 + ly2) / 2
+        pd = abs((lmx - mx) * (-uy) + (lmy - my) * ux)
+        if pd > max_perp_d:
+            continue
         perp_boost = 1.0 + 2.5 * perp
         weight = max(ll, lw) * max(lw, 0.02) * perp_boost
         if proj > deadzone:
@@ -726,6 +756,25 @@ def _detect_impl(odb_path: str, odb_comps: list) -> Dict[str, int]:
             if pin_idx is not None:
                 results[comp.ref] = pin_idx
                 break
+
+    # ── Board-level consistency ──────────────────────────────────────────
+    # If at least 2 detected diodes ALL agree on the same pin index,
+    # propagate that consensus to any undetected 2-pin diodes.
+    # This handles cases where the silk marking is ambiguous or absent
+    # for some components but the board uses a uniform cathode convention.
+    _DIODE_TYPES = ("diode", "led", "zener", "tvs", "schottky")
+    if len(results) >= 2:
+        idx_set = set(results.values())
+        if len(idx_set) == 1:
+            consensus_idx = next(iter(idx_set))
+            for comp in odb_comps:
+                if comp.ref in results:
+                    continue
+                if comp.comp_type not in _DIODE_TYPES:
+                    continue
+                if len(comp.pins) != 2:
+                    continue
+                results[comp.ref] = consensus_idx
 
     return results
 
