@@ -37,6 +37,10 @@ _ROLE_COLORS = {
     "fab_top":       (0.20, 0.20, 0.72),
     "courtyard_top": (0.0,  0.55, 0.55),
     "notes_top":     (0.35, 0.35, 0.35),
+    "title_top":     (0.25, 0.25, 0.25),
+    "title_bot":     (0.25, 0.25, 0.25),
+    "head_top":      (0.30, 0.30, 0.30),
+    "head_bot":      (0.30, 0.30, 0.30),
     "copper_bot":    (0.80, 0.35, 0.10),
     "silk_bot":      (0.65, 0.10, 0.10),
     "fab_bot":       (0.10, 0.45, 0.20),
@@ -204,6 +208,39 @@ def _discover_layers(mls: List[_MatrixLayer]) -> Dict[str, str]:
                  and "bot" not in ml.name and "b." not in ml.name), None)
     )
     r["notes_top"] = notes
+
+    # Title block / drawing frame layers (Altium: "title_text_top__3_", etc.)
+    title_top = (
+        _find("title", "text", "top") or _find("title", "top")
+        or next((ml.name for ml in mls
+                 if "title" in ml.name and "text" in ml.name
+                 and "bot" not in ml.name), None)
+    )
+    r["title_top"] = title_top
+
+    title_bot = (
+        _find("title", "text", "bot") or _find("title", "bot")
+        or next((ml.name for ml in mls
+                 if "title" in ml.name and "text" in ml.name
+                 and "bot" in ml.name), None)
+    )
+    r["title_bot"] = title_bot
+
+    # Header layers (Altium: "head_top__5_", "head_bot__6_")
+    head_top = (
+        _find("head", "top")
+        or next((ml.name for ml in mls
+                 if "head" in ml.name and "top" in ml.name
+                 and "bot" not in ml.name), None)
+    )
+    r["head_top"] = head_top
+
+    head_bot = (
+        _find("head", "bot")
+        or next((ml.name for ml in mls
+                 if "head" in ml.name and "bot" in ml.name), None)
+    )
+    r["head_bot"] = head_bot
 
     # ── Bottom layers ─────────────────────────────────────────────────────────
     r["copper_bot"] = (
@@ -409,6 +446,7 @@ def render_odb_to_pdf(
     draw_cu: bool = False,
     draw_silk: bool = True,
     draw_notes: bool = False,
+    draw_title_block: bool = False,
     draw_refdes: bool = True,
     mark_pin1: bool = True,
     save_png: bool = True,
@@ -457,6 +495,51 @@ def render_odb_to_pdf(
     else:
         bx0, bx1, by0, by1 = 0, 100, 0, 100
 
+    # ── Title block extent expansion ───────────────────────────────────────
+    # When draw_title_block is enabled, scan title layers for their coordinate
+    # extent and expand the page boundaries to include the full drawing frame.
+    if draw_title_block:
+        _title_roles = ["title_top", "title_bot", "head_top", "head_bot"]
+        title_xs: List[float] = []
+        title_ys: List[float] = []
+        for trole in _title_roles:
+            tfolder = role_map.get(trole)
+            if not tfolder:
+                continue
+            tcnt = reader.read(f"steps/pcb/layers/{tfolder}/features")
+            if not tcnt:
+                continue
+            _t_inch = (tcnt is not None and _detect_units(tcnt) == "INCH")
+            _t_c2mm = 25.4 if _t_inch else 1.0
+            for tln in tcnt.splitlines():
+                tln = tln.strip()
+                if tln.startswith("L "):
+                    tp = tln.split(";")[0].split()
+                    if len(tp) >= 5:
+                        try:
+                            title_xs.extend([float(tp[1])*_t_c2mm, float(tp[3])*_t_c2mm])
+                            title_ys.extend([float(tp[2])*_t_c2mm, float(tp[4])*_t_c2mm])
+                        except (ValueError, IndexError):
+                            pass
+                elif tln.startswith("A "):
+                    tp = tln.split()
+                    if len(tp) >= 7:
+                        try:
+                            title_xs.extend([float(tp[1])*_t_c2mm, float(tp[3])*_t_c2mm])
+                            title_ys.extend([float(tp[2])*_t_c2mm, float(tp[4])*_t_c2mm])
+                        except (ValueError, IndexError):
+                            pass
+        if title_xs and title_ys:
+            tbx0, tbx1 = min(title_xs), max(title_xs)
+            tby0, tby1 = min(title_ys), max(title_ys)
+            _log(f"   [render] Title block extent: "
+                 f"({tbx0:.1f}, {tby0:.1f}) – ({tbx1:.1f}, {tby1:.1f}) mm")
+            bx0 = min(bx0, tbx0)
+            bx1 = max(bx1, tbx1)
+            by0 = min(by0, tby0)
+            by1 = max(by1, tby1)
+            _log(f"   [render] Expanded page to include title block.")
+
     bw = bx1 - bx0 + 2*margin_mm
     bh = by1 - by0 + 2*margin_mm
     pw = bw * MM_TO_PT
@@ -488,6 +571,7 @@ def render_odb_to_pdf(
     ocg_silk    = doc.add_ocg("Silkscreen",           on=True)
     ocg_court   = doc.add_ocg("Courtyard",            on=draw_courtyard)
     ocg_notes   = doc.add_ocg("Notes / User Drawing", on=draw_notes)
+    ocg_title   = doc.add_ocg("Title block / Frame",  on=draw_title_block)
     ocg_labels  = doc.add_ocg("Reference labels",     on=draw_refdes)
     ocg_markers = doc.add_ocg("Polarity markers",     on=True)
     ocg_dnp     = doc.add_ocg("DNP (Not Placed)",     on=True)
@@ -541,6 +625,15 @@ def render_odb_to_pdf(
             plan.append(("silk_bot", role_map["silk_bot"], ocg_silk, 1, tx_b))
     if draw_notes and "notes_top" in role_map:
         plan.append(("notes_top", role_map["notes_top"], ocg_notes, 0, tx))
+    if draw_title_block:
+        if "title_top" in role_map:
+            plan.append(("title_top", role_map["title_top"], ocg_title, 0, tx))
+        if "title_bot" in role_map:
+            plan.append(("title_bot", role_map["title_bot"], ocg_title, 1, tx_b))
+        if "head_top" in role_map:
+            plan.append(("head_top", role_map["head_top"], ocg_title, 0, tx))
+        if "head_bot" in role_map:
+            plan.append(("head_bot", role_map["head_bot"], ocg_title, 1, tx_b))
 
     for role, folder, ocg, pi, tfx in plan:
         _log(f"   [render] Reading layer '{folder}' …")

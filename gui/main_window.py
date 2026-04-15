@@ -77,6 +77,7 @@ class AnalysisWorker(QObject):
         draw_silk: bool = False,
         draw_courtyard: bool = True,
         draw_notes: bool = False,
+        draw_title_block: bool = False,
         draw_refdes: bool = True,
     ):
         super().__init__()
@@ -89,6 +90,7 @@ class AnalysisWorker(QObject):
         self.draw_silk      = draw_silk
         self.draw_courtyard = draw_courtyard
         self.draw_notes     = draw_notes
+        self.draw_title_block = draw_title_block
         self.draw_refdes    = draw_refdes
 
     @Slot()
@@ -277,6 +279,7 @@ class AnalysisWorker(QObject):
                                      ("silk", self.draw_silk),
                                      ("courtyard", self.draw_courtyard),
                                      ("notes", self.draw_notes),
+                                     ("title_block", self.draw_title_block),
                                      ("refdes", self.draw_refdes)] if v]
         self.log.emit(
             f"\n🖨️  Rendering ODB++ → PDF  "
@@ -293,6 +296,7 @@ class AnalysisWorker(QObject):
                 draw_silk=self.draw_silk,
                 draw_courtyard=self.draw_courtyard,
                 draw_notes=self.draw_notes,
+                draw_title_block=self.draw_title_block,
                 draw_refdes=self.draw_refdes,
                 mark_pin1=True, save_png=False,
                 overrides=self.corrections,
@@ -504,6 +508,13 @@ class MainWindow(QMainWindow):
         self._notes_cb.setToolTip(
             "Notes/User Drawing layer — often contains the title block and border."
         )
+        self._title_cb = QCheckBox("Title block")
+        self._title_cb.setChecked(False)
+        self._title_cb.setToolTip(
+            "Drawing frame & title block (border, revision table, company logo area).\n"
+            "Expands the page to include the full drawing frame.\n"
+            "ODB++ layers: title_text_top/bottom, head_top/bottom."
+        )
         self._refdes_cb = QCheckBox("RefDes")
         self._refdes_cb.setChecked(True)
         self._refdes_cb.setToolTip(
@@ -530,6 +541,7 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(self._silk_cb)
         opt_row.addWidget(self._court_cb)
         opt_row.addWidget(self._notes_cb)
+        opt_row.addWidget(self._title_cb)
         opt_row.addWidget(self._refdes_cb)
         opt_row.addStretch()
         opt_row.addWidget(self._rerender_btn)
@@ -714,6 +726,7 @@ class MainWindow(QMainWindow):
             draw_silk=self._silk_cb.isChecked(),
             draw_courtyard=self._court_cb.isChecked(),
             draw_notes=self._notes_cb.isChecked(),
+            draw_title_block=self._title_cb.isChecked(),
             draw_refdes=self._refdes_cb.isChecked(),
         )
         self._worker.moveToThread(self._thread)
@@ -1135,6 +1148,7 @@ class MainWindow(QMainWindow):
                 draw_silk=self._silk_cb.isChecked(),
                 draw_courtyard=self._court_cb.isChecked(),
                 draw_notes=self._notes_cb.isChecked(),
+                draw_title_block=self._title_cb.isChecked(),
                 draw_refdes=self._refdes_cb.isChecked(),
                 mark_pin1=True, save_png=False,
                 overrides=self._corrections,
@@ -1233,6 +1247,7 @@ class MainWindow(QMainWindow):
                 "silk":      self._silk_cb.isChecked(),
                 "courtyard": self._court_cb.isChecked(),
                 "notes":     self._notes_cb.isChecked() if hasattr(self, "_notes_cb") else False,
+                "title_block": self._title_cb.isChecked() if hasattr(self, "_title_cb") else False,
             },
             "corrections":    self._corrections,
             # comp_positions enables auto-restoring the PDF preview next session
@@ -1260,6 +1275,8 @@ class MainWindow(QMainWindow):
             if "courtyard" in opts: self._court_cb.setChecked(bool(opts["courtyard"]))
             if hasattr(self, "_notes_cb") and "notes" in opts:
                 self._notes_cb.setChecked(bool(opts["notes"]))
+            if hasattr(self, "_title_cb") and "title_block" in opts:
+                self._title_cb.setChecked(bool(opts["title_block"]))
             sess_corr = data.get("corrections", {})
             if isinstance(sess_corr, dict) and sess_corr and not self._corrections:
                 self._corrections = sess_corr
