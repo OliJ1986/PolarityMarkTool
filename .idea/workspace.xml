@@ -5,8 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Enhance detection of assembly layer sides and improve diagonal line filtering">
+      <change afterPath="$PROJECT_DIR$/utils/translations.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/odb_renderer.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/odb_renderer.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/main_window.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -24,8 +24,8 @@
   </component>
   <component name="CopilotUserSelectedModel">
     <selectedModels>
-      <entry key="chat-panel" value="Claude Opus 4.6" />
-      <entry key="agent-panel" value="Claude Opus 4.6" />
+      <entry key="chat-panel" value="Claude Sonnet 4.6" />
+      <entry key="agent-panel" value="Claude Sonnet 4.6" />
     </selectedModels>
   </component>
   <component name="Git.Settings">
@@ -69,6 +69,7 @@
     "Python.pad_asymmetry_detector.executor": "Run",
     "Python.test_layers.executor": "Run",
     "Python.test_ubf3604.executor": "Run",
+    "Python.translations.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "git-widget-placeholder": "master",

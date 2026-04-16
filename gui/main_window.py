@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton, QFileDialog, QTextEdit, QLabel,
     QSplitter, QCheckBox, QMessageBox, QGroupBox,
     QLineEdit, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QMenu, QAbstractItemView,
+    QHeaderView, QProgressBar, QMenu, QAbstractItemView, QComboBox,
 )
 
 from core.pdf_parser import PDFParser
@@ -38,6 +38,7 @@ from core.image_polarity_detector import ImagePolarityDetector
 from core.matcher import Matcher, MatchResult
 from core.exporter import Exporter
 from utils.config import Config
+from utils.translations import TRANSLATIONS, LANGUAGE_NAMES
 from gui.correction_dialog import CorrectionDialog
 from gui.pdf_preview import PDFPreviewWidget, PreviewDialog
 
@@ -413,6 +414,7 @@ class AnalysisWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._lang: str           = "en"
         self._odb_path: str       = ""
         self._results: list       = []
         self._thread              = None
@@ -426,8 +428,13 @@ class MainWindow(QMainWindow):
         self._syncing_selection: bool = False   # prevents selection sync loops
         self._setup_ui()
 
+    def tr(self, key: str) -> str:  # type: ignore[override]
+        """Return the translated string for *key* in the current language."""
+        lang_dict = TRANSLATIONS.get(self._lang, TRANSLATIONS["en"])
+        return lang_dict.get(key, TRANSLATIONS["en"].get(key, key))
+
     def _setup_ui(self) -> None:
-        self.setWindowTitle("PolarityMark – PCB Polarity Detector")
+        self.setWindowTitle(self.tr("window_title"))
         self.setMinimumSize(960, 660)
         self.resize(1200, 780)
 
@@ -438,102 +445,92 @@ class MainWindow(QMainWindow):
         root.setSpacing(6)
 
         # ── Input ─────────────────────────────────────────────────────────
-        input_group = QGroupBox("Input files")
-        ig = QVBoxLayout(input_group)
+        self._input_group = QGroupBox(self.tr("group_input"))
+        ig = QVBoxLayout(self._input_group)
         odb_row = QHBoxLayout()
         self._odb_edit = QLineEdit()
-        self._odb_edit.setPlaceholderText("ODB++ source file (.tgz / .zip / directory) …")
+        self._odb_edit.setPlaceholderText(self.tr("placeholder_odb"))
         self._odb_edit.setReadOnly(True)
-        odb_browse = QPushButton("Browse…")
-        odb_browse.setFixedWidth(90)
-        odb_browse.clicked.connect(self._browse_odb)
+        self._odb_browse_btn = QPushButton(self.tr("btn_browse"))
+        self._odb_browse_btn.setFixedWidth(110)
+        self._odb_browse_btn.clicked.connect(self._browse_odb)
         odb_clear = QPushButton("✕")
         odb_clear.setFixedWidth(28)
-        odb_clear.setToolTip("Clear ODB++ selection")
+        odb_clear.setToolTip(self.tr("tooltip_odb_clear"))
         odb_clear.clicked.connect(self._clear_odb)
-        odb_row.addWidget(QLabel("ODB++:"))
+        self._odb_clear_btn = odb_clear
+        self._odb_label = QLabel(self.tr("label_odb"))
+        odb_row.addWidget(self._odb_label)
         odb_row.addWidget(self._odb_edit)
-        odb_row.addWidget(odb_browse)
+        odb_row.addWidget(self._odb_browse_btn)
         odb_row.addWidget(odb_clear)
         ig.addLayout(odb_row)
 
         # ── DNP (Do-Not-Place) ───────────────────────────────────────────
         dnp_row = QHBoxLayout()
-        dnp_lbl = QLabel("DNP:")
-        dnp_lbl.setFixedWidth(36)
-        dnp_lbl.setToolTip("Do-Not-Place components")
+        self._dnp_label = QLabel(self.tr("label_dnp"))
+        self._dnp_label.setFixedWidth(36)
+        self._dnp_label.setToolTip(self.tr("tooltip_dnp_label"))
         self._dnp_edit = QLineEdit()
-        self._dnp_edit.setPlaceholderText(
-            "Do-Not-Place components (comma-separated, e.g.: R5, C3, D12, U4) …"
-        )
-        self._dnp_edit.setToolTip(
-            "These components are highlighted orange in the PDF and preview.\n"
-            "No polarity marker is drawn for them."
-        )
+        self._dnp_edit.setPlaceholderText(self.tr("placeholder_dnp"))
+        self._dnp_edit.setToolTip(self.tr("tooltip_dnp_edit"))
         self._dnp_edit.textChanged.connect(self._on_dnp_changed)
         dnp_clear_btn = QPushButton("✕")
         dnp_clear_btn.setFixedWidth(28)
-        dnp_clear_btn.setToolTip("Clear DNP list")
+        dnp_clear_btn.setToolTip(self.tr("tooltip_dnp_clear"))
         dnp_clear_btn.clicked.connect(lambda: self._dnp_edit.clear())
-        dnp_row.addWidget(dnp_lbl)
+        self._dnp_clear_btn = dnp_clear_btn
+        dnp_row.addWidget(self._dnp_label)
         dnp_row.addWidget(self._dnp_edit)
         dnp_row.addWidget(dnp_clear_btn)
         ig.addLayout(dnp_row)
 
-        root.addWidget(input_group)
+        root.addWidget(self._input_group)
 
         # ── Options row ───────────────────────────────────────────────────
         opt_row = QHBoxLayout()
-        self._debug_cb    = QCheckBox("Debug mode")
-        self._save_pdf_cb = QCheckBox("Save annotated PDF")
+        self._debug_cb    = QCheckBox(self.tr("cb_debug"))
+        self._save_pdf_cb = QCheckBox(self.tr("cb_save_pdf"))
         self._save_pdf_cb.setChecked(True)
 
-        self._fab_cb = QCheckBox("Fab")
+        self._fab_cb = QCheckBox(self.tr("cb_fab"))
         self._fab_cb.setChecked(False)
-        self._fab_cb.setToolTip(
-            "Fab/assembly layer — component body outlines.\n"
-            "Many lines (~7000+), slower render."
-        )
-        self._silk_cb = QCheckBox("Silkscreen")
+        self._fab_cb.setToolTip(self.tr("tooltip_fab"))
+        self._silk_cb = QCheckBox(self.tr("cb_silk"))
         self._silk_cb.setChecked(False)
-        self._silk_cb.setToolTip("Silkscreen layer — labels and polarity symbols.")
-        self._court_cb = QCheckBox("Courtyard")
+        self._silk_cb.setToolTip(self.tr("tooltip_silk"))
+        self._court_cb = QCheckBox(self.tr("cb_court"))
         self._court_cb.setChecked(True)
-        self._court_cb.setToolTip(
-            "Courtyard layer — component boundary outlines.\n"
-            "Few lines, fast render."
-        )
-        self._notes_cb = QCheckBox("Notes/User Drawing")
+        self._court_cb.setToolTip(self.tr("tooltip_court"))
+        self._notes_cb = QCheckBox(self.tr("cb_notes"))
         self._notes_cb.setChecked(True)
-        self._notes_cb.setToolTip(
-            "Notes/User Drawing layer — often contains the title block and border."
-        )
-        self._title_cb = QCheckBox("Title block")
+        self._notes_cb.setToolTip(self.tr("tooltip_notes"))
+        self._title_cb = QCheckBox(self.tr("cb_title"))
         self._title_cb.setChecked(False)
-        self._title_cb.setToolTip(
-            "Drawing frame & title block (border, revision table, company logo area).\n"
-            "Expands the page to include the full drawing frame.\n"
-            "ODB++ layers: title_text_top/bottom, head_top/bottom."
-        )
-        self._refdes_cb = QCheckBox("RefDes")
+        self._title_cb.setToolTip(self.tr("tooltip_title"))
+        self._refdes_cb = QCheckBox(self.tr("cb_refdes"))
         self._refdes_cb.setChecked(True)
-        self._refdes_cb.setToolTip(
-            "Show reference designators (e.g. U1, C3, D5) on the PDF.\n"
-            "Disable for a cleaner view without component labels."
-        )
+        self._refdes_cb.setToolTip(self.tr("tooltip_refdes"))
 
-        self._analyze_btn = QPushButton("🔍  Analyze")
+        self._analyze_btn = QPushButton(self.tr("btn_analyze"))
         self._analyze_btn.setFixedWidth(140)
         self._analyze_btn.setEnabled(False)
         self._analyze_btn.clicked.connect(self._run_analysis)
 
-        self._rerender_btn = QPushButton("🔄  Re-render")
+        self._rerender_btn = QPushButton(self.tr("btn_rerender"))
         self._rerender_btn.setFixedWidth(120)
         self._rerender_btn.setEnabled(False)
-        self._rerender_btn.setToolTip(
-            "Re-render the ODB++ PDF with current manual corrections applied"
-        )
+        self._rerender_btn.setToolTip(self.tr("tooltip_rerender"))
         self._rerender_btn.clicked.connect(self._rerender_odb)
+
+        # ── Language selector ─────────────────────────────────────────────
+        self._lang_label = QLabel(self.tr("language_label"))
+        self._lang_combo = QComboBox()
+        for code, name in LANGUAGE_NAMES.items():
+            self._lang_combo.addItem(name, code)
+        self._lang_combo.setCurrentIndex(list(LANGUAGE_NAMES.keys()).index(self._lang))
+        self._lang_combo.setFixedWidth(90)
+        self._lang_combo.currentIndexChanged.connect(self._on_language_changed)
 
         opt_row.addWidget(self._debug_cb)
         opt_row.addWidget(self._save_pdf_cb)
@@ -544,6 +541,8 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(self._title_cb)
         opt_row.addWidget(self._refdes_cb)
         opt_row.addStretch()
+        opt_row.addWidget(self._lang_label)
+        opt_row.addWidget(self._lang_combo)
         opt_row.addWidget(self._rerender_btn)
         opt_row.addWidget(self._analyze_btn)
         root.addLayout(opt_row)
@@ -558,25 +557,26 @@ class MainWindow(QMainWindow):
         # ── Splitter: log | results ───────────────────────────────────────
         splitter = QSplitter(Qt.Horizontal)
 
-        log_group = QGroupBox("Analysis Log")
-        log_layout = QVBoxLayout(log_group)
+        self._log_group = QGroupBox(self.tr("group_log"))
+        log_layout = QVBoxLayout(self._log_group)
         self._log_view = QTextEdit()
         self._log_view.setReadOnly(True)
         self._log_view.setFont(QFont("Consolas", 9))
         log_layout.addWidget(self._log_view)
-        splitter.addWidget(log_group)
+        splitter.addWidget(self._log_group)
 
-        res_group = QGroupBox("Results")
-        res_layout = QVBoxLayout(res_group)
+        self._res_group = QGroupBox(self.tr("group_results"))
+        res_layout = QVBoxLayout(self._res_group)
         self._results_search = QLineEdit()
-        self._results_search.setPlaceholderText(
-            "Search: ref / type / status / marker …"
-        )
+        self._results_search.setPlaceholderText(self.tr("placeholder_search"))
         self._results_search.textChanged.connect(self._apply_results_filter)
         res_layout.addWidget(self._results_search)
-        headers = ["Ref", "Type", "Page", "Status", "Confidence", "Marker types"]
-        self._table = QTableWidget(0, len(headers))
-        self._table.setHorizontalHeaderLabels(headers)
+        self._table_headers = [
+            self.tr("col_ref"), self.tr("col_type"), self.tr("col_page"),
+            self.tr("col_status"), self.tr("col_conf"), self.tr("col_markers"),
+        ]
+        self._table = QTableWidget(0, len(self._table_headers))
+        self._table.setHorizontalHeaderLabels(self._table_headers)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -592,14 +592,14 @@ class MainWindow(QMainWindow):
         res_layout.addWidget(self._table)
 
         export_row = QHBoxLayout()
-        self._export_btn = QPushButton("💾  Export JSON")
+        self._export_btn = QPushButton(self.tr("btn_export_json"))
         self._export_btn.setEnabled(False)
         self._export_btn.clicked.connect(self._export_json)
         export_row.addStretch()
         export_row.addWidget(self._export_btn)
         res_layout.addLayout(export_row)
 
-        splitter.addWidget(res_group)
+        splitter.addWidget(self._res_group)
 
         # ── PDF Preview — lives in a separate floating window ─────────────
         self._preview = PDFPreviewWidget()
@@ -613,12 +613,9 @@ class MainWindow(QMainWindow):
 
         # Small button below the results table to open the preview window
         open_prev_row = QHBoxLayout()
-        self._open_preview_btn = QPushButton("🔍  Open PDF Preview…")
+        self._open_preview_btn = QPushButton(self.tr("btn_open_preview"))
         self._open_preview_btn.setEnabled(False)
-        self._open_preview_btn.setToolTip(
-            "Open the rendered PDF in a separate window.\n"
-            "The window is resizable and supports fullscreen (F11)."
-        )
+        self._open_preview_btn.setToolTip(self.tr("tooltip_open_preview"))
         self._open_preview_btn.clicked.connect(self._open_preview_window)
         open_prev_row.addStretch()
         open_prev_row.addWidget(self._open_preview_btn)
@@ -627,7 +624,57 @@ class MainWindow(QMainWindow):
         splitter.setSizes([300, 900])
         root.addWidget(splitter, 1)
 
-        self.statusBar().showMessage("Ready.  Load an ODB++ file to begin.")
+        self.statusBar().showMessage(self.tr("status_ready"))
+
+    # ── Language ──────────────────────────────────────────────────────────
+
+    @Slot(int)
+    def _on_language_changed(self, index: int) -> None:
+        self._lang = self._lang_combo.itemData(index)
+        self._retranslate_ui()
+
+    def _retranslate_ui(self) -> None:
+        """Update all static UI text to the currently selected language."""
+        self.setWindowTitle(self.tr("window_title"))
+        self._input_group.setTitle(self.tr("group_input"))
+        self._odb_label.setText(self.tr("label_odb"))
+        self._odb_edit.setPlaceholderText(self.tr("placeholder_odb"))
+        self._odb_browse_btn.setText(self.tr("btn_browse"))
+        self._odb_clear_btn.setToolTip(self.tr("tooltip_odb_clear"))
+        self._dnp_label.setText(self.tr("label_dnp"))
+        self._dnp_label.setToolTip(self.tr("tooltip_dnp_label"))
+        self._dnp_edit.setPlaceholderText(self.tr("placeholder_dnp"))
+        self._dnp_edit.setToolTip(self.tr("tooltip_dnp_edit"))
+        self._dnp_clear_btn.setToolTip(self.tr("tooltip_dnp_clear"))
+        self._debug_cb.setText(self.tr("cb_debug"))
+        self._save_pdf_cb.setText(self.tr("cb_save_pdf"))
+        self._fab_cb.setText(self.tr("cb_fab"))
+        self._fab_cb.setToolTip(self.tr("tooltip_fab"))
+        self._silk_cb.setText(self.tr("cb_silk"))
+        self._silk_cb.setToolTip(self.tr("tooltip_silk"))
+        self._court_cb.setText(self.tr("cb_court"))
+        self._court_cb.setToolTip(self.tr("tooltip_court"))
+        self._notes_cb.setText(self.tr("cb_notes"))
+        self._notes_cb.setToolTip(self.tr("tooltip_notes"))
+        self._title_cb.setText(self.tr("cb_title"))
+        self._title_cb.setToolTip(self.tr("tooltip_title"))
+        self._refdes_cb.setText(self.tr("cb_refdes"))
+        self._refdes_cb.setToolTip(self.tr("tooltip_refdes"))
+        self._lang_label.setText(self.tr("language_label"))
+        self._analyze_btn.setText(self.tr("btn_analyze"))
+        self._rerender_btn.setText(self.tr("btn_rerender"))
+        self._rerender_btn.setToolTip(self.tr("tooltip_rerender"))
+        self._log_group.setTitle(self.tr("group_log"))
+        self._res_group.setTitle(self.tr("group_results"))
+        self._results_search.setPlaceholderText(self.tr("placeholder_search"))
+        headers = [
+            self.tr("col_ref"), self.tr("col_type"), self.tr("col_page"),
+            self.tr("col_status"), self.tr("col_conf"), self.tr("col_markers"),
+        ]
+        self._table.setHorizontalHeaderLabels(headers)
+        self._export_btn.setText(self.tr("btn_export_json"))
+        self._open_preview_btn.setText(self.tr("btn_open_preview"))
+        self._open_preview_btn.setToolTip(self.tr("tooltip_open_preview"))
 
     # ── File browse slots ─────────────────────────────────────────────────
 
@@ -644,8 +691,7 @@ class MainWindow(QMainWindow):
         self._preview.set_dnp_refs(self._dnp_refs)
         if self._dnp_refs:
             self.statusBar().showMessage(
-                f"DNP: {len(self._dnp_refs)} component(s) marked  —  "
-                "Re-render to bake into PDF."
+                self.tr("status_dnp_set").format(n=len(self._dnp_refs))
             )
 
     @Slot()
@@ -666,7 +712,7 @@ class MainWindow(QMainWindow):
             self._load_corrections_sidecar(path)
             self._load_session_json(path)
             self._restore_results_json(path)
-            self.statusBar().showMessage(f"ODB++: {os.path.basename(path)}")
+            self.statusBar().showMessage(self.tr("status_odb_loaded").format(name=os.path.basename(path)))
 
     @Slot()
     def _clear_odb(self) -> None:
@@ -675,7 +721,7 @@ class MainWindow(QMainWindow):
         self._odb_edit.clear()
         self._analyze_btn.setEnabled(False)
         self._reset_output()
-        self.statusBar().showMessage("ODB++ cleared.")
+        self.statusBar().showMessage(self.tr("status_odb_cleared"))
 
     def _reset_output(self) -> None:
         self._log_view.clear()
@@ -709,7 +755,7 @@ class MainWindow(QMainWindow):
         self._log_view.clear()
         self._table.setRowCount(0)
         self._progress.setValue(0)
-        self.statusBar().showMessage("Analyzing …")
+        self.statusBar().showMessage(self.tr("status_analyzing"))
 
         # Release any open PDF handle BEFORE the worker tries to overwrite the file.
         # Without this, Windows raises "Permission denied" on the second analysis run.
@@ -771,8 +817,9 @@ class MainWindow(QMainWindow):
         self._append_log(f"\n⏱  Elapsed time: {time_str}")
 
         self.statusBar().showMessage(
-            f"Done — {len(results)} components, {n_marked} with polarity markers  "
-            f"({time_str})"
+            self.tr("status_done").format(
+                n_results=len(results), n_marked=n_marked, time_str=time_str
+            )
         )
 
         if odb_rendered and pdf_path:
@@ -791,8 +838,8 @@ class MainWindow(QMainWindow):
 
         if odb_rendered and pdf_path and os.path.exists(pdf_path):
             reply = QMessageBox.question(
-                self, "Open rendered PDF?",
-                f"Polarity PDF rendered from ODB++:\n{pdf_path}\n\nOpen now?",
+                self, self.tr("dlg_open_rendered_title"),
+                self.tr("dlg_open_rendered_msg").format(pdf_path=pdf_path),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
             )
             if reply == QMessageBox.Yes:
@@ -815,8 +862,8 @@ class MainWindow(QMainWindow):
                 if os.path.exists(out_png):
                     self._append_log(f"🖼  Preview       → {out_png}")
                 reply = QMessageBox.question(
-                    self, "Open annotated PDF?",
-                    f"Saved:\n{out_pdf}\n\nOpen now?",
+                    self, self.tr("dlg_open_annotated_title"),
+                    self.tr("dlg_open_annotated_msg").format(out_pdf=out_pdf),
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
                 )
                 if reply == QMessageBox.Yes:
@@ -842,7 +889,7 @@ class MainWindow(QMainWindow):
         self._append_log(f"❌ Error:\n{msg}")
         self._append_log(f"⏱  Running time before error: {time_str}")
         self._analyze_btn.setEnabled(bool(self._odb_path))
-        self.statusBar().showMessage("Analysis failed.")
+        self.statusBar().showMessage(self.tr("log_analysis_failed"))
 
     # ── Manual corrections ────────────────────────────────────────────────
 
@@ -878,11 +925,11 @@ class MainWindow(QMainWindow):
         nr_refs = [r for r in selected_refs if self._is_needs_review(r)]
         if nr_refs:
             nr_label = nr_refs[0] if len(nr_refs) == 1 else f"{len(nr_refs)} components"
-            act_accept = QAction(f"✓  Accept current pin for {nr_label}", self)
+            act_accept = QAction(self.tr("ctx_accept_pin").format(label=nr_label), self)
             _nr = list(nr_refs)  # capture for lambda
             act_accept.triggered.connect(lambda: self._quick_accept(_nr, flip=False))
             menu.addAction(act_accept)
-            act_flip = QAction(f"↔  Flip & Accept for {nr_label}", self)
+            act_flip = QAction(self.tr("ctx_flip_accept").format(label=nr_label), self)
             act_flip.triggered.connect(lambda: self._quick_accept(_nr, flip=True))
             menu.addAction(act_flip)
             menu.addSeparator()
@@ -890,20 +937,20 @@ class MainWindow(QMainWindow):
         if n == 1:
             ref = selected_refs[0]
             row = self._row_for_ref(ref)
-            act_edit = QAction(f"✏️  Edit polarity correction for {ref}", self)
+            act_edit = QAction(self.tr("ctx_edit_single").format(ref=ref), self)
             act_edit.triggered.connect(lambda: self._open_correction_dialog(row, ref))
             menu.addAction(act_edit)
             if ref in self._corrections:
-                act_clear = QAction(f"✕  Clear correction for {ref}", self)
+                act_clear = QAction(self.tr("ctx_clear_single").format(ref=ref), self)
                 act_clear.triggered.connect(lambda: self._clear_correction(ref))
                 menu.addAction(act_clear)
         else:
-            act_edit = QAction(f"✏️  Edit correction for {n} components …", self)
+            act_edit = QAction(self.tr("ctx_edit_multi").format(n=n), self)
             act_edit.triggered.connect(lambda: self._open_bulk_correction_dialog(selected_refs))
             menu.addAction(act_edit)
             has_any_corr = any(r in self._corrections for r in selected_refs)
             if has_any_corr:
-                act_clear = QAction(f"✕  Clear corrections for all {n}", self)
+                act_clear = QAction(self.tr("ctx_clear_multi").format(n=n), self)
                 act_clear.triggered.connect(lambda: self._clear_bulk_corrections(selected_refs))
                 menu.addAction(act_clear)
 
@@ -980,10 +1027,9 @@ class MainWindow(QMainWindow):
             self._rerender_btn.setEnabled(True)
         n = len(refs)
         label = refs[0] if n == 1 else f"{n} components"
-        action = "saved" if correction else "cleared"
+        action = self.tr("log_correction_saved_action") if correction else self.tr("log_correction_cleared_action")
         self._append_log(
-            f"✎ Correction {action} for {label}. "
-            "Click '🔄 Re-render' to update the PDF."
+            self.tr("log_correction_saved").format(action=action, label=label)
         )
 
     def _clear_correction(self, ref: str) -> None:
@@ -1015,10 +1061,9 @@ class MainWindow(QMainWindow):
 
         n          = len(refs)
         label      = refs[0] if n == 1 else f"{n} components"
-        flip_note  = " (pin flipped)" if flip else ""
+        flip_note  = self.tr("log_accepted_flip_note") if flip else ""
         self._append_log(
-            f"✓ Accepted{flip_note}: {label}.  "
-            "Click '🔄 Re-render' to update the PDF."
+            self.tr("log_accepted").format(flip_note=flip_note, label=label)
         )
 
     # ── Selection sync (preview ↔ table) ─────────────────────────────────
@@ -1092,10 +1137,10 @@ class MainWindow(QMainWindow):
         if nr_refs:
             nr_label = nr_refs[0] if len(nr_refs) == 1 else f"{len(nr_refs)} components"
             _nr = list(nr_refs)
-            act_accept = QAction(f"✓  Accept current pin for {nr_label}", self)
+            act_accept = QAction(self.tr("ctx_accept_pin").format(label=nr_label), self)
             act_accept.triggered.connect(lambda: self._quick_accept(_nr, flip=False))
             menu.addAction(act_accept)
-            act_flip = QAction(f"↔  Flip & Accept for {nr_label}", self)
+            act_flip = QAction(self.tr("ctx_flip_accept").format(label=nr_label), self)
             act_flip.triggered.connect(lambda: self._quick_accept(_nr, flip=True))
             menu.addAction(act_flip)
             menu.addSeparator()
@@ -1103,21 +1148,21 @@ class MainWindow(QMainWindow):
         if n == 1:
             ref = selected_refs[0]
             row = self._row_for_ref(ref)
-            act_edit = QAction(f"✏️  Edit correction for {ref}", self)
+            act_edit = QAction(self.tr("ctx_edit_preview_single").format(ref=ref), self)
             act_edit.triggered.connect(lambda: self._open_correction_dialog(row, ref))
             menu.addAction(act_edit)
             if ref in self._corrections:
-                act_clear = QAction(f"✕  Clear correction for {ref}", self)
+                act_clear = QAction(self.tr("ctx_clear_single").format(ref=ref), self)
                 act_clear.triggered.connect(lambda: self._clear_correction(ref))
                 menu.addAction(act_clear)
         else:
-            act_edit = QAction(f"✏️  Edit correction for {n} components …", self)
+            act_edit = QAction(self.tr("ctx_edit_multi").format(n=n), self)
             act_edit.triggered.connect(
                 lambda: self._open_bulk_correction_dialog(selected_refs)
             )
             menu.addAction(act_edit)
             if any(r in self._corrections for r in selected_refs):
-                act_clear = QAction(f"✕  Clear corrections for all {n}", self)
+                act_clear = QAction(self.tr("ctx_clear_multi").format(n=n), self)
                 act_clear.triggered.connect(
                     lambda: self._clear_bulk_corrections(selected_refs)
                 )
@@ -1129,11 +1174,11 @@ class MainWindow(QMainWindow):
         odb_path = self._last_odb_path
         out_pdf  = self._last_out_pdf
         if not odb_path or not out_pdf:
-            QMessageBox.warning(self, "Re-render",
-                                "No ODB++ render to update yet.\nRun Analyze first.")
+            QMessageBox.warning(self, self.tr("dlg_rerender_no_odb_title"),
+                                self.tr("dlg_rerender_no_odb_msg"))
             return
         self._rerender_btn.setEnabled(False)
-        self._append_log("\n🔄 Re-rendering with corrections …")
+        self._append_log(self.tr("log_rerender_start"))
 
         # Release the PDF file handle BEFORE overwriting the file on disk.
         # Without this, Windows raises "Permission denied" because PyMuPDF
@@ -1155,15 +1200,15 @@ class MainWindow(QMainWindow):
                 dnp_refs=self._dnp_refs,
                 log_fn=self._append_log,
             )
-            self._append_log(f"   PDF updated: {out_pdf}")
+            self._append_log(self.tr("log_pdf_updated").format(out_pdf=out_pdf))
             # Reload preview with fresh render
             if self._comp_positions:
                 self._load_preview(out_pdf, self._comp_positions)
                 self._preview.refresh(self._results, self._corrections)
                 self._preview.set_dnp_refs(self._dnp_refs)
             reply = QMessageBox.question(
-                self, "Open updated PDF?",
-                f"Re-rendered:\n{out_pdf}\n\nOpen now?",
+                self, self.tr("dlg_open_rerendered_title"),
+                self.tr("dlg_open_rerendered_msg").format(out_pdf=out_pdf),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
             )
             if reply == QMessageBox.Yes:
@@ -1173,7 +1218,7 @@ class MainWindow(QMainWindow):
                     import subprocess
                     subprocess.Popen(["cmd", "/c", "start", "", out_pdf])
         except Exception as exc:
-            self._append_log(f"❌ Re-render failed: {exc}")
+            self._append_log(self.tr("log_rerender_failed").format(exc=exc))
             # Re-open the old PDF if render failed (so preview stays functional)
             if self._comp_positions and os.path.exists(out_pdf):
                 self._load_preview(out_pdf, self._comp_positions)
@@ -1196,7 +1241,7 @@ class MainWindow(QMainWindow):
                 n = len(self._corrections)
                 if n:
                     self.statusBar().showMessage(
-                        f"Loaded {n} manual correction(s) from sidecar."
+                        self.tr("status_corrections_loaded").format(n=n)
                     )
             except Exception:
                 self._corrections = {}
@@ -1339,13 +1384,13 @@ class MainWindow(QMainWindow):
                 self._preview.set_dnp_refs(self._dnp_refs)
                 self._append_log("   🖼  PDF preview loaded.")
                 self.statusBar().showMessage(
-                    f"Restored {len(results)} components from JSON  "
-                    f"({n_marked} marked)  —  PDF preview loaded."
+                    self.tr("status_json_restored_preview").format(
+                        n=len(results), n_marked=n_marked
+                    )
                 )
             else:
                 self.statusBar().showMessage(
-                    f"Restored {len(results)} components from JSON — "
-                    f"click '🔄 Re-render' to rebuild the PDF."
+                    self.tr("status_json_restored").format(n=len(results))
                 )
             return
 
@@ -1357,7 +1402,7 @@ class MainWindow(QMainWindow):
             return
         base = os.path.splitext(self._odb_path or "output")[0]
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save JSON", base + "_polarity.json",
+            self, self.tr("dlg_save_json_title"), base + "_polarity.json",
             "JSON Files (*.json);;All Files (*)"
         )
         if not path:
@@ -1365,9 +1410,10 @@ class MainWindow(QMainWindow):
         try:
             Exporter().export_json(self._results, path, self._odb_path or path)
             self.statusBar().showMessage(f"JSON saved: {path}")
-            QMessageBox.information(self, "Export", f"JSON saved:\n{path}")
+            QMessageBox.information(self, self.tr("dlg_export_title"),
+                                    self.tr("dlg_export_msg").format(path=path))
         except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, self.tr("dlg_export_error_title"), str(exc))
 
     # ── Table ─────────────────────────────────────────────────────────────
 
