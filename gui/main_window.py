@@ -75,10 +75,10 @@ class AnalysisWorker(QObject):
         corrections: Optional[dict] = None,
         dnp_refs: Optional[set] = None,
         draw_fab: bool = False,
-        draw_silk: bool = False,
+        draw_silk: bool = True,
         draw_courtyard: bool = True,
         draw_notes: bool = False,
-        draw_title_block: bool = False,
+        draw_title_block: bool = True,
         draw_refdes: bool = True,
     ):
         super().__init__()
@@ -414,7 +414,7 @@ class AnalysisWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self._lang: str           = "en"
+        self._lang: str           = "hu"
         self._odb_path: str       = ""
         self._results: list       = []
         self._thread              = None
@@ -497,19 +497,19 @@ class MainWindow(QMainWindow):
         self._fab_cb.setChecked(False)
         self._fab_cb.setToolTip(self.tr("tooltip_fab"))
         self._silk_cb = QCheckBox(self.tr("cb_silk"))
-        self._silk_cb.setChecked(False)
+        self._silk_cb.setChecked(True)
         self._silk_cb.setToolTip(self.tr("tooltip_silk"))
         self._court_cb = QCheckBox(self.tr("cb_court"))
         self._court_cb.setChecked(True)
         self._court_cb.setToolTip(self.tr("tooltip_court"))
-        self._notes_cb = QCheckBox(self.tr("cb_notes"))
-        self._notes_cb.setChecked(True)
-        self._notes_cb.setToolTip(self.tr("tooltip_notes"))
+        #self._notes_cb = QCheckBox(self.tr("cb_notes"))
+        #self._notes_cb.setChecked(True)
+        #self._notes_cb.setToolTip(self.tr("tooltip_notes"))
         self._title_cb = QCheckBox(self.tr("cb_title"))
-        self._title_cb.setChecked(False)
+        self._title_cb.setChecked(True)
         self._title_cb.setToolTip(self.tr("tooltip_title"))
         self._refdes_cb = QCheckBox(self.tr("cb_refdes"))
-        self._refdes_cb.setChecked(True)
+        self._refdes_cb.setChecked(False)
         self._refdes_cb.setToolTip(self.tr("tooltip_refdes"))
 
         self._analyze_btn = QPushButton(self.tr("btn_analyze"))
@@ -537,7 +537,7 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(self._fab_cb)
         opt_row.addWidget(self._silk_cb)
         opt_row.addWidget(self._court_cb)
-        opt_row.addWidget(self._notes_cb)
+        #opt_row.addWidget(self._notes_cb)
         opt_row.addWidget(self._title_cb)
         opt_row.addWidget(self._refdes_cb)
         opt_row.addStretch()

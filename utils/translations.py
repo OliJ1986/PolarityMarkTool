@@ -274,8 +274,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "Fab/szerelési réteg — alkatrész-körvonalak.\n"
             "Sok vonal (~7000+), lassabb renderelés."
         ),
-        "cb_silk": "Szitanyomat",
-        "tooltip_silk": "Szitanyomat-réteg — feliratok és polaritásszimbólumok.",
+        "cb_silk": "Silkscreen",
+        "tooltip_silk": "Silkscreen-réteg — feliratok és polaritásszimbólumok.",
         "cb_court": "Courtyard",
         "tooltip_court": (
             "Courtyard-réteg — alkatrészhatárokat jelző körvonalak.\n"

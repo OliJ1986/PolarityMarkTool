@@ -4,10 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Enhance detection of assembly layer sides and improve diagonal line filtering">
-      <change afterPath="$PROJECT_DIR$/utils/translations.py" afterDir="false" />
+    <list default="true" id="c7a289e5-eed2-4596-8570-ff8f84205ed0" name="Changes" comment="Add language support and enhance UI translations for improved accessibility">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/main_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils/translations.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/translations.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -234,7 +234,15 @@
       <option name="project" value="LOCAL" />
       <updated>1776235491023</updated>
     </task>
-    <option name="localTasksCounter" value="18" />
+    <task id="LOCAL-00018" summary="Add language support and enhance UI translations for improved accessibility">
+      <option name="closed" value="true" />
+      <created>1776326637061</created>
+      <option name="number" value="00018" />
+      <option name="presentableId" value="LOCAL-00018" />
+      <option name="project" value="LOCAL" />
+      <updated>1776326637062</updated>
+    </task>
+    <option name="localTasksCounter" value="19" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
@@ -248,7 +256,8 @@
     <MESSAGE value="Add detection method for diode/LED cathode pins and enhance polarity marker visuals" />
     <MESSAGE value="Enhance diode/LED cathode detection by analyzing silkscreen and assembly layers" />
     <MESSAGE value="Enhance detection of assembly layer sides and improve diagonal line filtering" />
-    <option name="LAST_COMMIT_MESSAGE" value="Enhance detection of assembly layer sides and improve diagonal line filtering" />
+    <MESSAGE value="Add language support and enhance UI translations for improved accessibility" />
+    <option name="LAST_COMMIT_MESSAGE" value="Add language support and enhance UI translations for improved accessibility" />
   </component>
   <component name="github-copilot-workspace">
     <instructionFileLocations>
