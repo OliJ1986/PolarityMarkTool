@@ -9,7 +9,6 @@ top-left origin convention (y increases downward).
 import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
-from shapely.geometry import MultiPoint
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -208,21 +207,3 @@ def bbox_from_fitz_rect(rect) -> BoundingBox:
     """Convert a fitz.Rect (or fitz.IRect) to a BoundingBox."""
     return BoundingBox(rect.x0, rect.y0, rect.x1, rect.y1)
 
-
-# Convex hull calculation using shapely
-
-def convex_hull(points: List[Point]) -> List[Point]:
-    """
-    Returns the convex hull of the input points as a list of Point objects (in order).
-    If less than 3 points, returns the input as-is.
-    """
-    if len(points) < 3:
-        return points[:]
-    mp = MultiPoint([(p.x, p.y) for p in points])
-    hull = mp.convex_hull
-    if hull.geom_type == 'Polygon':
-        return [Point(x, y) for x, y in hull.exterior.coords[:-1]]  # skip closing point
-    elif hull.geom_type == 'LineString':
-        return [Point(x, y) for x, y in hull.coords]
-    else:
-        return points[:]

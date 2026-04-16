@@ -26,11 +26,9 @@ For Altium and other tools, a best-effort name-match is performed.
 from __future__ import annotations
 
 import math
-import os
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from utils.geometry import BoundingBox, Point, bbox_from_fitz_rect
+from utils.geometry import BoundingBox, Point
 from core.pdf_parser import ParsedPage, TextElement, VectorShape
 
 # ─────────────────────────────────────────────────────────────────────────────

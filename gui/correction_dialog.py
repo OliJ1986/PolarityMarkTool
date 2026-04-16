@@ -16,10 +16,9 @@ from typing import Dict, List, Union
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QDialog, QVBoxLayout, QFormLayout,
     QLabel, QLineEdit, QCheckBox, QDialogButtonBox,
-    QGroupBox, QRadioButton, QButtonGroup, QSizePolicy,
-    QScrollArea, QWidget,
+    QGroupBox, QRadioButton, QButtonGroup,
 )
 
 
