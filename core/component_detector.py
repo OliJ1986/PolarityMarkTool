@@ -60,6 +60,7 @@ class Component:
     bbox: BoundingBox     # bounding box of the reference text span
     center: Point         # centre of bbox
     page: int             # 0-based page index
+    mount_type: str = ""  # "SMT" | "THT" | "OTHER" | "" (unknown)
 
     @property
     def is_polar(self) -> bool:

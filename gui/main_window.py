@@ -42,7 +42,7 @@ from utils.translations import TRANSLATIONS, LANGUAGE_NAMES
 from gui.correction_dialog import CorrectionDialog
 from gui.pdf_preview import PDFPreviewWidget, PreviewDialog
 
-COL_REF = 0; COL_TYPE = 1; COL_PAGE = 2; COL_STATUS = 3; COL_CONF = 4; COL_MARKERS = 5
+COL_REF = 0; COL_TYPE = 1; COL_PAGE = 2; COL_MOUNT = 3; COL_STATUS = 4; COL_CONF = 5; COL_MARKERS = 6
 _STATUS_COLOR = {
     "marked":       QColor(200, 255, 200),
     "unmarked":     QColor(255, 210, 210),
@@ -80,6 +80,8 @@ class AnalysisWorker(QObject):
         draw_notes: bool = False,
         draw_title_block: bool = True,
         draw_refdes: bool = True,
+        mount_filter: str = "ALL",
+        lang: str = "en",
     ):
         super().__init__()
         self.file_path      = file_path
@@ -93,6 +95,8 @@ class AnalysisWorker(QObject):
         self.draw_notes     = draw_notes
         self.draw_title_block = draw_title_block
         self.draw_refdes    = draw_refdes
+        self.mount_filter   = mount_filter
+        self.lang           = lang
 
     @Slot()
     def run(self) -> None:
@@ -287,7 +291,9 @@ class AnalysisWorker(QObject):
             f"[layers: {', '.join(layers_on) if layers_on else 'outline+markers only'}] …"
         )
         base    = os.path.splitext(self.file_path)[0]
-        out_pdf = base + "_polarity.pdf"
+        _mf = (self.mount_filter or "ALL").upper()
+        _suffix = {"SMT": "_SMT", "THT": "_THT"}.get(_mf, "_Complete")
+        out_pdf = base + f"_polarity{_suffix}.pdf"
         comp_positions: dict = {}
         try:
             render_odb_to_pdf(
@@ -304,6 +310,17 @@ class AnalysisWorker(QObject):
                 dnp_refs=self.dnp_refs,
                 odb_comps_cache=raw_comps,
                 capture_positions=comp_positions,
+                mount_filter=self.mount_filter,
+                legend_labels={
+                    "polarity":       (TRANSLATIONS.get(self.lang, TRANSLATIONS["en"])
+                                       .get("legend_polarity", "Polarity marker")),
+                    "dnp":            (TRANSLATIONS.get(self.lang, TRANSLATIONS["en"])
+                                       .get("legend_dnp", "Do Not Place")),
+                    "legend_excl_smt":(TRANSLATIONS.get(self.lang, TRANSLATIONS["en"])
+                                       .get("legend_excl_smt", "SMT component (excluded)")),
+                    "legend_excl_tht":(TRANSLATIONS.get(self.lang, TRANSLATIONS["en"])
+                                       .get("legend_excl_tht", "THT component (excluded)")),
+                },
                 log_fn=self.log.emit,
             )
             self.log.emit(f"   📄 PDF saved: {out_pdf}")
@@ -523,6 +540,14 @@ class MainWindow(QMainWindow):
         self._rerender_btn.setToolTip(self.tr("tooltip_rerender"))
         self._rerender_btn.clicked.connect(self._rerender_odb)
 
+        # ── Mount-type filter ─────────────────────────────────────────────
+        self._mount_filter_label = QLabel(self.tr("label_mount_filter"))
+        self._mount_filter_combo = QComboBox()
+        for key in ("ALL", "SMT", "THT"):
+            self._mount_filter_combo.addItem(self.tr(f"mount_filter_{key.lower()}"), key)
+        self._mount_filter_combo.setFixedWidth(90)
+        self._mount_filter_combo.setToolTip(self.tr("tooltip_mount_filter"))
+
         # ── Language selector ─────────────────────────────────────────────
         self._lang_label = QLabel(self.tr("language_label"))
         self._lang_combo = QComboBox()
@@ -541,6 +566,8 @@ class MainWindow(QMainWindow):
         opt_row.addWidget(self._title_cb)
         opt_row.addWidget(self._refdes_cb)
         opt_row.addStretch()
+        opt_row.addWidget(self._mount_filter_label)
+        opt_row.addWidget(self._mount_filter_combo)
         opt_row.addWidget(self._lang_label)
         opt_row.addWidget(self._lang_combo)
         opt_row.addWidget(self._rerender_btn)
@@ -573,7 +600,7 @@ class MainWindow(QMainWindow):
         res_layout.addWidget(self._results_search)
         self._table_headers = [
             self.tr("col_ref"), self.tr("col_type"), self.tr("col_page"),
-            self.tr("col_status"), self.tr("col_conf"), self.tr("col_markers"),
+            self.tr("col_mount"), self.tr("col_status"), self.tr("col_conf"), self.tr("col_markers"),
         ]
         self._table = QTableWidget(0, len(self._table_headers))
         self._table.setHorizontalHeaderLabels(self._table_headers)
@@ -654,8 +681,9 @@ class MainWindow(QMainWindow):
         self._silk_cb.setToolTip(self.tr("tooltip_silk"))
         self._court_cb.setText(self.tr("cb_court"))
         self._court_cb.setToolTip(self.tr("tooltip_court"))
-        self._notes_cb.setText(self.tr("cb_notes"))
-        self._notes_cb.setToolTip(self.tr("tooltip_notes"))
+        if hasattr(self, "_notes_cb"):
+            self._notes_cb.setText(self.tr("cb_notes"))
+            self._notes_cb.setToolTip(self.tr("tooltip_notes"))
         self._title_cb.setText(self.tr("cb_title"))
         self._title_cb.setToolTip(self.tr("tooltip_title"))
         self._refdes_cb.setText(self.tr("cb_refdes"))
@@ -664,12 +692,16 @@ class MainWindow(QMainWindow):
         self._analyze_btn.setText(self.tr("btn_analyze"))
         self._rerender_btn.setText(self.tr("btn_rerender"))
         self._rerender_btn.setToolTip(self.tr("tooltip_rerender"))
+        self._mount_filter_label.setText(self.tr("label_mount_filter"))
+        self._mount_filter_combo.setToolTip(self.tr("tooltip_mount_filter"))
+        for i, key in enumerate(("ALL", "SMT", "THT")):
+            self._mount_filter_combo.setItemText(i, self.tr(f"mount_filter_{key.lower()}"))
         self._log_group.setTitle(self.tr("group_log"))
         self._res_group.setTitle(self.tr("group_results"))
         self._results_search.setPlaceholderText(self.tr("placeholder_search"))
         headers = [
             self.tr("col_ref"), self.tr("col_type"), self.tr("col_page"),
-            self.tr("col_status"), self.tr("col_conf"), self.tr("col_markers"),
+            self.tr("col_mount"), self.tr("col_status"), self.tr("col_conf"), self.tr("col_markers"),
         ]
         self._table.setHorizontalHeaderLabels(headers)
         self._export_btn.setText(self.tr("btn_export_json"))
@@ -774,6 +806,8 @@ class MainWindow(QMainWindow):
 #            draw_notes=self._notes_cb.isChecked(),
             draw_title_block=self._title_cb.isChecked(),
             draw_refdes=self._refdes_cb.isChecked(),
+            mount_filter=self._mount_filter_combo.currentData(),
+            lang=self._lang,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -1172,11 +1206,16 @@ class MainWindow(QMainWindow):
     @Slot()
     def _rerender_odb(self) -> None:
         odb_path = self._last_odb_path
-        out_pdf  = self._last_out_pdf
-        if not odb_path or not out_pdf:
+        if not odb_path or not self._last_out_pdf:
             QMessageBox.warning(self, self.tr("dlg_rerender_no_odb_title"),
                                 self.tr("dlg_rerender_no_odb_msg"))
             return
+        # Recompute output filename from the current mount-filter selection so
+        # switching between SMT / THT / Complete never overwrites the other file.
+        _mf = (self._mount_filter_combo.currentData() or "ALL").upper()
+        _suffix = {"SMT": "_SMT", "THT": "_THT"}.get(_mf, "_Complete")
+        out_pdf = os.path.splitext(odb_path)[0] + f"_polarity{_suffix}.pdf"
+        self._last_out_pdf = out_pdf   # keep in sync for preview reload
         self._rerender_btn.setEnabled(False)
         self._append_log(self.tr("log_rerender_start"))
 
@@ -1198,6 +1237,13 @@ class MainWindow(QMainWindow):
                 mark_pin1=True, save_png=False,
                 overrides=self._corrections,
                 dnp_refs=self._dnp_refs,
+                mount_filter=self._mount_filter_combo.currentData(),
+                legend_labels={
+                    "polarity":       self.tr("legend_polarity"),
+                    "dnp":            self.tr("legend_dnp"),
+                    "legend_excl_smt": self.tr("legend_excl_smt"),
+                    "legend_excl_tht": self.tr("legend_excl_tht"),
+                },
                 log_fn=self._append_log,
             )
             self._append_log(self.tr("log_pdf_updated").format(out_pdf=out_pdf))
@@ -1438,15 +1484,19 @@ class MainWindow(QMainWindow):
                 marker_types = ", ".join(sorted(set(m.marker_type for m in result.markers)))
                 conf_str = f"{result.overall_confidence:.0%}" if result.has_polarity else "—"
                 ref_text = comp.ref + (" ✎" if comp.ref in self._corrections else "")
+                mount_str = comp.mount_type or "—"
                 values = [
                     ref_text, comp.comp_type, str(comp.page + 1),
-                    result.polarity_status, conf_str, marker_types or "—",
+                    mount_str, result.polarity_status, conf_str, marker_types or "—",
                 ]
                 for col, val in enumerate(values):
                     item = QTableWidgetItem(val)
                     item.setTextAlignment(Qt.AlignCenter)
                     bg = _STATUS_COLOR.get(result.polarity_status)
-                    if bg:
+                    # Extra colour hint for THT components
+                    if col == COL_MOUNT and val == "THT":
+                        item.setBackground(QColor(255, 240, 200))  # light amber
+                    elif bg:
                         item.setBackground(bg)
                     self._table.setItem(row, col, item)
         finally:
@@ -1462,7 +1512,7 @@ class MainWindow(QMainWindow):
                 self._table.setRowHidden(row, False)
                 continue
             hay = []
-            for col in (COL_REF, COL_TYPE, COL_STATUS, COL_MARKERS):
+            for col in (COL_REF, COL_TYPE, COL_MOUNT, COL_STATUS, COL_MARKERS):
                 item = self._table.item(row, col)
                 if item and item.text():
                     hay.append(item.text().lower())

@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec file for PolarityMark
-# Build:  .venv\Scripts\pyinstaller.exe PolarityMark.spec
+# Build:  .venv\Scripts\pyinstaller.exe PolarityMark.spec --noconfirm
 
 from pathlib import Path
 import sys, os
@@ -22,12 +22,15 @@ for subdir in ("fonts", "resources"):
     if src.exists():
         datas.append((str(src), f"ezdxf/{subdir}"))
 
-# pymupdf: the __init__.py, table.py, utils.py, mupdf.py etc. are in the package
-# PyInstaller collects them automatically, but we add the package folder explicitly
-# so the large mupdf.py stub is available at runtime.
+# pymupdf: collect the whole package folder so the mupdf stub is available
 pymupdf_dir = pkg("pymupdf")
 if pymupdf_dir.exists():
     datas.append((str(pymupdf_dir), "pymupdf"))
+
+# cv2 (opencv-python-headless): haarcascades + other data files
+cv2_dir = pkg("cv2")
+if cv2_dir.exists():
+    datas.append((str(cv2_dir), "cv2"))
 
 # ── Native binaries ───────────────────────────────────────────────────────────
 
@@ -50,6 +53,12 @@ hiddenimports = [
     "PySide6.QtGui",
     "PySide6.QtWidgets",
     "PySide6.QtPrintSupport",
+    # opencv (lazy-imported in image_polarity_detector)
+    "cv2",
+    # numpy (used by opencv / shapely)
+    "numpy",
+    "numpy.core",
+    "numpy.core._multiarray_umath",
     # shapely geometry ops
     "shapely",
     "shapely.geometry",
@@ -62,10 +71,38 @@ hiddenimports = [
     "ezdxf.resources",
     "ezdxf.math._vector",
     "ezdxf.math._matrix44",
-    # project packages
+    # project packages — core
     "core",
+    "core.component_detector",
+    "core.component_shape_assign",
+    "core.dxf_parser",
+    "core.exporter",
+    "core.image_polarity_detector",
+    "core.matcher",
+    "core.odb_parser",
+    "core.odb_registration",
+    "core.odb_renderer",
+    "core.odb_silk_cathode",
+    "core.pad_asymmetry_detector",
+    "core.pdf_parser",
+    "core.polarity_detector",
+    # project packages — gui
     "gui",
+    "gui.correction_dialog",
+    "gui.main_window",
+    "gui.pdf_preview",
+    # project packages — utils
     "utils",
+    "utils.config",
+    "utils.geometry",
+    "utils.translations",
+    # stdlib extras sometimes missed
+    "tarfile",
+    "zipfile",
+    "json",
+    "re",
+    "math",
+    "traceback",
 ]
 
 # ── Modules to exclude (unused Qt modules — reduces size by ~200 MB) ─────────
@@ -132,7 +169,6 @@ a = Analysis(
     hookspath=[],
     hooksconfig={
         "PySide6": {
-            # Keep only what we actually use
             "excluded_plugins": [
                 "Qt3D*", "QtBluetooth*", "QtCharts*",
                 "QtDataVisualization*", "QtMultimedia*",
@@ -158,14 +194,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,          # UPX can break Qt DLLs — leave off
-    console=False,      # no black console window
+    upx=False,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon="assets/icon.ico",  # uncomment if you add an icon file
+    # icon="assets/icon.ico",
 )
 
 coll = COLLECT(
@@ -178,4 +214,3 @@ coll = COLLECT(
     upx_exclude=[],
     name="PolarityMark",
 )
-

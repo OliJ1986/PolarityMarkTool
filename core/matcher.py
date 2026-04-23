@@ -47,6 +47,7 @@ class MatchResult:
         return {
             "reference":        self.component.ref,
             "type":             self.component.comp_type,
+            "mount_type":       self.component.mount_type or "",
             "page":             self.component.page + 1,   # 1-based
             "polarity_status":  self.polarity_status,
             "confidence":       round(self.overall_confidence, 3),

@@ -61,6 +61,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_analyze": "🔍  Analyze",
         "btn_rerender": "🔄  Re-render",
         "tooltip_rerender": "Re-render the ODB++ PDF with current manual corrections applied",
+        "label_mount_filter": "Show:",
+        "mount_filter_all": "All",
+        "mount_filter_smt": "SMT only",
+        "mount_filter_tht": "THT only",
+        "tooltip_mount_filter": (
+            "Filter which components appear on the rendered PDF.\n"
+            "All — render all components\n"
+            "SMT only — surface-mount components only\n"
+            "THT only — through-hole components only"
+        ),
 
         # ── Log / Results ─────────────────────────────────────────────────
         "group_log": "Analysis Log",
@@ -69,6 +79,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "col_ref": "Ref",
         "col_type": "Type",
         "col_page": "Page",
+        "col_mount": "Mount",
         "col_status": "Status",
         "col_conf": "Confidence",
         "col_markers": "Marker types",
@@ -123,6 +134,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log_accepted": "✓ Accepted{flip_note}: {label}.  Click '🔄 Re-render' to update the PDF.",
         "log_accepted_flip_note": " (pin flipped)",
         "log_analysis_failed": "Analysis failed.",
+
+        # ── PDF legend ────────────────────────────────────────────────────
+        "legend_polarity":  "Polarity marker",
+        "legend_dnp":       "Do Not Place",
+        "legend_excl_smt":  "SMT component (excluded)",
+        "legend_excl_tht":  "THT component (excluded)",
     },
 
     "de": {
@@ -180,6 +197,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_analyze": "🔍  Analysieren",
         "btn_rerender": "🔄  Neu rendern",
         "tooltip_rerender": "ODB++-PDF mit aktuellen manuellen Korrekturen neu rendern",
+        "label_mount_filter": "Anzeigen:",
+        "mount_filter_all": "Alle",
+        "mount_filter_smt": "Nur SMT",
+        "mount_filter_tht": "Nur THT",
+        "tooltip_mount_filter": (
+            "Filtert, welche Bauteile im gerenderten PDF erscheinen.\n"
+            "Alle — alle Bauteile rendern\n"
+            "Nur SMT — nur SMD-Bauteile\n"
+            "Nur THT — nur bedrahtete Bauteile"
+        ),
 
         # ── Log / Results ─────────────────────────────────────────────────
         "group_log": "Analyseprotokoll",
@@ -188,6 +215,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "col_ref": "Ref",
         "col_type": "Typ",
         "col_page": "Seite",
+        "col_mount": "Bauweise",
         "col_status": "Status",
         "col_conf": "Konfidenz",
         "col_markers": "Markertypen",
@@ -242,6 +270,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log_accepted": "✓ Akzeptiert{flip_note}: {label}.  '🔄 Neu rendern' zum Aktualisieren des PDFs.",
         "log_accepted_flip_note": " (Pin umgekehrt)",
         "log_analysis_failed": "Analyse fehlgeschlagen.",
+
+        # ── PDF legend ────────────────────────────────────────────────────
+        "legend_polarity":  "Polaritätsmarker",
+        "legend_dnp":       "Nicht bestücken",
+        "legend_excl_smt":  "SMT-Bauteil (ausgeblendet)",
+        "legend_excl_tht":  "THT-Bauteil (ausgeblendet)",
     },
 
     "hu": {
@@ -299,6 +333,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_analyze": "🔍  Elemzés",
         "btn_rerender": "🔄  Újrarenderelés",
         "tooltip_rerender": "Az ODB++ PDF újrarenderelése a jelenlegi manuális javításokkal",
+        "label_mount_filter": "Megjelenít:",
+        "mount_filter_all": "Összes",
+        "mount_filter_smt": "Csak SMT",
+        "mount_filter_tht": "Csak THT",
+        "tooltip_mount_filter": (
+            "Szűri, hogy mely alkatrészek kerüljenek a renderelt PDF-re.\n"
+            "Összes — minden alkatrész\n"
+            "Csak SMT — kizárólag felületi szerelésű alkatrészek\n"
+            "Csak THT — kizárólag átmenő lyukú alkatrészek"
+        ),
 
         # ── Log / Results ─────────────────────────────────────────────────
         "group_log": "Elemzési napló",
@@ -307,6 +351,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "col_ref": "Ref",
         "col_type": "Típus",
         "col_page": "Oldal",
+        "col_mount": "Technológia",
         "col_status": "Státusz",
         "col_conf": "Megbízhatóság",
         "col_markers": "Markertípusok",
@@ -361,6 +406,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log_accepted": "✓ Elfogadva{flip_note}: {label}.  Kattintson a '🔄 Újrarenderelés' gombra a PDF frissítéséhez.",
         "log_accepted_flip_note": " (tüske megfordítva)",
         "log_analysis_failed": "Az elemzés sikertelen.",
+
+        # ── PDF legend ────────────────────────────────────────────────────
+        "legend_polarity":  "Polaritásjelölő",
+        "legend_dnp":       "Nem beültetett alkatrész",
+        "legend_excl_smt":  "SMT alkatrész (kizárva)",
+        "legend_excl_tht":  "THT alkatrész (kizárva)",
     },
 }
 

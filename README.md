@@ -15,6 +15,28 @@ Primary source: **ODB++ archive** → annotated PDF with polarity markers.
 - Silk layer cathode detection for diodes/LEDs
 - **needs_review** status for low-confidence results (60%) with one-click Accept / Flip & Accept
 
+### Mount type filter
+- **Show: All / SMT only / THT only** selector in the toolbar
+- Filters which components appear in the rendered PDF based on their mount technology (SMT vs. THT)
+- Components excluded by the filter are highlighted with a **purple transparent overlay** so they remain visible but clearly distinguished
+- The output filename automatically includes the active filter:
+  - `_polarity_SMT.pdf` — SMT-only render
+  - `_polarity_THT.pdf` — THT-only render
+  - `_polarity_Complete.pdf` — all components
+- Switching the filter and clicking **🔄 Re-render** produces a separate file — existing renders are never overwritten
+
+### PDF legend
+- A **color swatch legend** is printed in a dedicated strip below the board artwork on every rendered page
+- Swatches appear in the currently selected UI language (English / Deutsch / Magyar):
+
+  | Color | Meaning |
+  |-------|---------|
+  | 🟢 Green | Polarity marker |
+  | 🟠 Orange | Do Not Place (DNP) |
+  | 🟣 Purple | Component excluded by mount filter (only shown when SMT-only or THT-only is active) |
+
+- The legend strip adds 8 mm of extra page height so it never overlaps the PCB artwork
+
 ### Manual corrections
 - Per-component: force polarity / flip pin / add note
 - Bulk correction for multiple components at once (Ctrl+click or rubber-band selection)
@@ -90,7 +112,9 @@ ODB++ (.tgz / .zip / directory)
        ├─ Board outline
        ├─ Fab / Silkscreen / Courtyard / Notes / RefDes  (toggleable)
        ├─ Polarity markers  (green D-shape or filled circle at pin-1)
-       └─ DNP markers  (orange transparent rectangle)
+       ├─ DNP markers  (orange transparent rectangle)
+       ├─ Mount-filter excluded overlay  (purple transparent rectangle)
+       └─ Legend strip  (color swatch + label below board artwork)
   → PDF preview + Results table + JSON export
 ```
 
@@ -116,19 +140,27 @@ ODB++ (.tgz / .zip / directory)
 | **Title block** | Drawing frame & title block (expands page to full frame) |
 | **RefDes** | Reference designator labels (U1, C3, D5 …) |
 
+### Mount filter
+
+| Option | Effect |
+|--------|--------|
+| **All** | Render all components regardless of technology |
+| **SMT only** | Render surface-mount components; THT components shown with purple overlay |
+| **THT only** | Render through-hole components; SMT components shown with purple overlay |
+
 ### Buttons
 
 | Button | Function |
 |--------|----------|
 | **🔍 Analyze** | Run ODB++ analysis and render PDF (threaded) |
-| **🔄 Re-render** | Regenerate PDF with current corrections and DNP list (fast, no re-analysis) |
+| **🔄 Re-render** | Regenerate PDF with current corrections, DNP list, and mount filter (fast, no re-analysis) |
 | **💾 Export JSON** | Save analysis result as JSON |
 | **🔍 Open PDF Preview…** | Open the rendered PDF in a floating, resizable preview window |
 
 ### Language selector
 
 Dropdown in the toolbar: **English** / **Deutsch** / **Magyar**  
-Switches all static UI labels, buttons, tooltips, and status messages instantly.
+Switches all static UI labels, buttons, tooltips, status messages, and the PDF legend text instantly.
 
 ---
 
@@ -220,6 +252,18 @@ On next open the PDF preview, results table, corrections, and DNP list are all r
 
 ---
 
+## Output File Naming
+
+The rendered PDF filename encodes the active mount filter so multiple renders can coexist in the same folder:
+
+| Active filter | Output filename |
+|---------------|----------------|
+| All | `<name>_polarity_Complete.pdf` |
+| SMT only | `<name>_polarity_SMT.pdf` |
+| THT only | `<name>_polarity_THT.pdf` |
+
+---
+
 ## JSON Output Format
 
 ```json
@@ -250,6 +294,7 @@ opencv-python-headless
 ezdxf
 regex
 numpy
+shapely
 ```
 
 Full version pinning: `requirements.txt`

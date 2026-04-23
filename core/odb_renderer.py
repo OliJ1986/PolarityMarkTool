@@ -49,7 +49,8 @@ _ROLE_COLORS = {
 }
 _HIGHLIGHT_GREEN  = (0.20, 0.95, 0.08)   # bright green highlighter
 _HIGHLIGHT_ORANGE = (1.00, 0.62, 0.00)   # orange highlighter (DNP)
-_HIGHLIGHT_YELLOW = (1.00, 0.88, 0.00)   # yellow highlighter (needs_review)
+_HIGHLIGHT_YELLOW  = (1.00, 0.88, 0.00)   # yellow highlighter (needs_review)
+_HIGHLIGHT_PURPLE  = (0.55, 0.00, 0.75)   # purple overlay (mount-filter excluded)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -455,6 +456,8 @@ def render_odb_to_pdf(
     dnp_refs: Optional[set] = None,
     odb_comps_cache: Optional[list] = None,
     capture_positions: Optional[dict] = None,
+    mount_filter: Optional[str] = None,
+    legend_labels: Optional[Dict[str, str]] = None,
     log_fn=None,
 ) -> str:
     # ↑ signature unchanged — only the body is replaced below
@@ -540,8 +543,13 @@ def render_odb_to_pdf(
             by1 = max(by1, tby1)
             _log(f"   [render] Expanded page to include title block.")
 
+    # Extra space at the bottom reserved for the legend strip (only when a
+    # legend will actually be drawn).  8 mm gives one comfortable row of swatches
+    # plus breathing room so the legend never overlaps the board artwork.
+    _legend_extra_mm = 8.0 if legend_labels else 0.0
+
     bw = bx1 - bx0 + 2*margin_mm
-    bh = by1 - by0 + 2*margin_mm
+    bh = by1 - by0 + 2*margin_mm + _legend_extra_mm
     pw = bw * MM_TO_PT
     ph = bh * MM_TO_PT
 
@@ -575,6 +583,7 @@ def render_odb_to_pdf(
     ocg_labels  = doc.add_ocg("Reference labels",     on=draw_refdes)
     ocg_markers = doc.add_ocg("Polarity markers",     on=True)
     ocg_dnp     = doc.add_ocg("DNP (Not Placed)",     on=True)
+    ocg_excl    = doc.add_ocg("Mount filter (excluded)", on=True)
 
     # ── Page title labels ─────────────────────────────────────────────────────
     title_fs = max(5.0, min(8.0, bw / 20))
@@ -642,7 +651,7 @@ def render_odb_to_pdf(
             _log("   [render]   (not found, skipped)")
             continue
         color = _ROLE_COLORS.get(role, (0.4, 0.4, 0.4))
-        syms, fl_lines, fl_pads, fl_arcs = _parse_features(cnt)
+        syms, fl_lines, fl_pads, fl_arcs, *_ = _parse_features(cnt)
         _log(f"   [render]   {role}: {len(fl_lines)} lines, "
              f"{len(fl_pads)} pads, {len(fl_arcs)} arcs → drawing …")
 
@@ -712,7 +721,23 @@ def render_odb_to_pdf(
     bot_comps = [c for c in odb_comps if c.side != "top"]
     _log(f"   [render] Components: {len(top_comps)} top, {len(bot_comps)} bottom.")
 
-    # Capture PDF coordinates: {ref: (page_idx, pdf_x, pdf_y)}
+    # ── Mount-type filter ─────────────────────────────────────────────────────
+    # ALL components are rendered (silk/fab untouched).
+    # Filtered-out components get a purple overlay (like DNP orange).
+    # Reference labels and polarity markers are only drawn for kept components.
+    excl_top_comps: list = []
+    excl_bot_comps: list = []
+    if mount_filter and mount_filter.upper() != "ALL":
+        _filter = mount_filter.upper()
+        before = len(top_comps) + len(bot_comps)
+        excl_top_comps = [c for c in top_comps if c.mount_type != _filter]
+        excl_bot_comps = [c for c in bot_comps if c.mount_type != _filter]
+        top_comps = [c for c in top_comps if c.mount_type == _filter]
+        bot_comps = [c for c in bot_comps if c.mount_type == _filter]
+        after = len(top_comps) + len(bot_comps)
+        n_excl = len(excl_top_comps) + len(excl_bot_comps)
+        _log(f"   [render] Mount filter '{_filter}': {after}/{before} kept, "
+             f"{n_excl} marked as excluded (purple overlay).")
     if capture_positions is not None:
         for oc in top_comps:
             capture_positions[oc.ref] = (0, txc(oc.x), tyc(oc.y))
@@ -730,9 +755,15 @@ def render_odb_to_pdf(
         (top_comps, 0, txc),
         (bot_comps, 1, txc_b),
     ]
+    # excl_render_pairs: filtered-out components (purple overlay only)
+    excl_render_pairs = [
+        (excl_top_comps, 0, txc),
+        (excl_bot_comps, 1, txc_b),
+    ]
 
-    # ── Reference labels ──────────────────────────────────────────────────────
-    n_labels = sum(1 for c in odb_comps if not c.ref.upper().startswith(("TP", "FID")))
+    # ── Reference labels (kept components only) ───────────────────────────────
+    filtered_comps = top_comps + bot_comps
+    n_labels = sum(1 for c in filtered_comps if not c.ref.upper().startswith(("TP", "FID")))
     _log(f"   [render] Drawing {n_labels} reference labels …")
     for comps, pi, tfx in comp_render_pairs:
         for oc in comps:
@@ -852,6 +883,87 @@ def render_odb_to_pdf(
                 fs.finish(fill=_HIGHLIGHT_ORANGE, fill_opacity=0.35, width=0, oc=ocg_dnp)
                 fs.commit()
         _log(f"   [render] DNP markers done ({n_dnp} component(s)).")
+
+    # ── Mount-filter excluded overlay (purple) ────────────────────────────────
+    n_excl_drawn = sum(len(c) for c, _, _ in excl_render_pairs)
+    if n_excl_drawn:
+        _log(f"   [render] Drawing purple overlay for {n_excl_drawn} excluded component(s) …")
+        for comps, pi, tfx in excl_render_pairs:
+            for oc in comps:
+                cx_, cy_ = tfx(oc.x), tyc(oc.y)
+                if oc.pins:
+                    xs = [tfx(p.x) for p in oc.pins]
+                    ys = [tyc(p.y)  for p in oc.pins]
+                    x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+                else:
+                    half = (max(3.0, oc.pin_span_mm * MM_TO_PT * 0.5)
+                            if oc.pin_span_mm > 0 else max(3.0, font_size * 1.5))
+                    x0, y0, x1, y1 = cx_ - half, cy_ - half, cx_ + half, cy_ + half
+                if (x1 - x0) < base_r:
+                    mid = (x0 + x1) / 2; x0, x1 = mid - base_r/2, mid + base_r/2
+                if (y1 - y0) < base_r:
+                    mid = (y0 + y1) / 2; y0, y1 = mid - base_r/2, mid + base_r/2
+                fs = doc[pi].new_shape()
+                fs.draw_rect(fitz.Rect(x0, y0, x1, y1))
+                fs.finish(fill=_HIGHLIGHT_PURPLE, fill_opacity=0.30, width=0, oc=ocg_excl)
+                fs.commit()
+        _log("   [render] Mount-filter purple overlay done.")
+
+    # ── Legend ────────────────────────────────────────────────────────────────
+    if legend_labels:
+        _log("   [render] Drawing legend …")
+        # Build list of (color, opacity, label) entries
+        legend_entries: list = []
+        pol_label = legend_labels.get("polarity", "Polarity marker")
+        dnp_label = legend_labels.get("dnp", "Do Not Place")
+        legend_entries.append((_HIGHLIGHT_GREEN,  0.55, pol_label))
+        legend_entries.append((_HIGHLIGHT_ORANGE, 0.55, dnp_label))
+        # Add purple entry only if there is a mount filter active
+        excl_label: Optional[str] = None
+        if mount_filter and mount_filter.upper() == "SMT":
+            excl_label = legend_labels.get("legend_excl_tht", "THT component (excluded)")
+        elif mount_filter and mount_filter.upper() == "THT":
+            excl_label = legend_labels.get("legend_excl_smt", "SMT component (excluded)")
+        if excl_label:
+            legend_entries.append((_HIGHLIGHT_PURPLE, 0.45, excl_label))
+
+        # Layout parameters
+        box_h_pt   = 6.0          # swatch height in pt
+        box_w_pt   = 10.0         # swatch width in pt
+        gap_pt     = 3.0          # gap between swatch and text
+        item_sep   = 18.0         # horizontal spacing between items
+        leg_fs     = max(4.5, min(6.0, bw / 35))  # font size
+        pad_x      = margin_mm * MM_TO_PT
+        # Place legend in the reserved strip below the board artwork.
+        # The board content occupies [0 .. ph - legend_extra_pt], so the legend
+        # sits centred vertically in the extra strip at the very bottom.
+        _legend_extra_pt = _legend_extra_mm * MM_TO_PT
+        leg_mid_y  = ph - _legend_extra_pt / 2.0        # vertical centre of strip
+        leg_y_top  = leg_mid_y - box_h_pt / 2.0
+        leg_y_bot  = leg_y_top + box_h_pt
+
+        for pi in range(min(2, len(doc))):
+            cursor_x = pad_x
+            for color, opacity, label in legend_entries:
+                # Draw filled rectangle swatch
+                fs = doc[pi].new_shape()
+                fs.draw_rect(fitz.Rect(cursor_x, leg_y_top, cursor_x + box_w_pt, leg_y_bot))
+                fs.finish(fill=color, fill_opacity=opacity, width=0.3,
+                          color=(0.3, 0.3, 0.3))
+                fs.commit()
+                # Draw label text
+                try:
+                    doc[pi].insert_text(
+                        fitz.Point(cursor_x + box_w_pt + gap_pt, leg_y_bot - 1.0),
+                        label, fontsize=leg_fs, color=(0.25, 0.25, 0.25), fontname="helv",
+                    )
+                except Exception:
+                    pass
+                # Estimate text width to advance cursor
+                text_w = len(label) * leg_fs * 0.52
+                cursor_x += box_w_pt + gap_pt + text_w + item_sep
+
+        _log("   [render] Legend done.")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     _log("   [render] Saving PDF …")
@@ -1007,6 +1119,7 @@ class _ArchiveReader:
     def __del__(self):
         if self._zf:
             self._zf.close()
+
 
 
 

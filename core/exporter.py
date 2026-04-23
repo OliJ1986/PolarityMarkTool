@@ -173,6 +173,7 @@ class Exporter:
             bbox=bbox,
             center=center,
             page=page,
+            mount_type=str(item.get("mount_type") or ""),
         )
 
     def _markers_from_json(self, raw: list, page: int) -> List[PolarityMarker]:
